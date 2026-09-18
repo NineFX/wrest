@@ -760,6 +760,36 @@ pub(crate) struct SessionConfig {
     pub proxy: ProxyAction,
     pub redirect_policy: Option<Policy>,
     pub http1_only: bool,
+    /// `WINHTTP_OPTION_SECURE_PROTOCOLS` allowlist, or `None` to leave
+    /// the session at the system default.
+    pub secure_protocols: Option<u32>,
+}
+
+/// Apply a `WINHTTP_OPTION_SECURE_PROTOCOLS` allowlist to a session.
+///
+/// `WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3` is only recognised on Windows 11
+/// / Server 2022 and later; older WinHTTP rejects the whole call with
+/// `ERROR_INVALID_PARAMETER`.  When the requested range permits lower
+/// versions too, retry without the TLS 1.3 bit.  A TLS-1.3-only range has
+/// no safe fallback, so the original error propagates rather than silently
+/// widening (or ignoring) what the caller pinned.
+fn set_secure_protocols(handle: abi::RawWinHttpHandle, mask: u32) -> Result<(), Error> {
+    let Err(err) = abi::winhttp_set_option_u32(handle, WINHTTP_OPTION_SECURE_PROTOCOLS, mask)
+    else {
+        return Ok(());
+    };
+
+    let without_tls13 = mask & !WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+    if without_tls13 == mask || without_tls13 == 0 {
+        return Err(err);
+    }
+
+    warn!(
+        mask,
+        "WINHTTP_OPTION_SECURE_PROTOCOLS rejected; retrying without TLS 1.3 \
+         (requires Windows 11 / Server 2022)"
+    );
+    abi::winhttp_set_option_u32(handle, WINHTTP_OPTION_SECURE_PROTOCOLS, without_tls13)
 }
 
 /// An open WinHTTP session with the callback installed.
@@ -841,6 +871,13 @@ impl WinHttpSession {
         // deadlocking the async model.  Must propagate.
         abi::winhttp_set_option_u32(session.0, WINHTTP_OPTION_ASSURED_NON_BLOCKING_CALLBACKS, 1)?;
 
+        // Pin the TLS protocol range (only if explicitly configured).
+        // The caller asked for this -- a silent failure would leave the
+        // session negotiating versions they excluded.
+        if let Some(mask) = config.secure_protocols {
+            set_secure_protocols(session.0, mask)?;
+        }
+
         // Set max connections per host (only if explicitly configured).
         // The caller asked for this -- silent failure would be misleading.
         if let Some(max_conns) = config.max_connections_per_host {
@@ -911,7 +948,7 @@ pub(crate) async fn execute_request(
     headers: &[(String, String)],
     body: Option<Body>,
     proxy_config: &ProxyConfig,
-    accept_invalid_certs: bool,
+    tls: &crate::tls::TlsConfig,
 ) -> Result<RawResponse, Error> {
     // Check per-request NO_PROXY override
     let per_request_proxy = proxy_config.resolve(&url.host, url.is_https);
@@ -1004,8 +1041,18 @@ pub(crate) async fn execute_request(
         }
     }
 
+    // Present a client certificate for mutual TLS, if one is configured.
+    // WinHTTP duplicates the context internally, so the `Identity` keeps
+    // ownership of its own reference.
+    #[cfg(feature = "client-cert")]
+    if let Some(identity) = &tls.identity
+        && url.is_https
+    {
+        abi::winhttp_set_client_cert(request_handle.raw(), identity.as_ptr()).url_context(url)?;
+    }
+
     // Disable certificate validation if requested
-    if accept_invalid_certs && url.is_https {
+    if tls.accept_invalid_certs && url.is_https {
         let security_flags: u32 = SECURITY_FLAG_IGNORE_UNKNOWN_CA
             | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID
             | SECURITY_FLAG_IGNORE_CERT_CN_INVALID
@@ -1589,6 +1636,7 @@ mod tests {
             proxy: ProxyAction::Automatic,
             redirect_policy: None,
             http1_only: false,
+            secure_protocols: None,
         };
 
         let session = WinHttpSession::open(&config).expect("session should open");
@@ -1598,9 +1646,17 @@ mod tests {
         // 5 MiB body -- exceeds the 4 MiB #[cfg(test)] threshold.
         let body = Body::from(vec![b'X'; 5 * 1024 * 1024]);
 
-        let raw = execute_request(&session, &url, "POST", &[], Some(body), &proxy_config, false)
-            .await
-            .expect("large body request should succeed");
+        let raw = execute_request(
+            &session,
+            &url,
+            "POST",
+            &[],
+            Some(body),
+            &proxy_config,
+            &crate::tls::TlsConfig::default(),
+        )
+        .await
+        .expect("large body request should succeed");
 
         assert_eq!(raw.status, 200);
     }
@@ -1703,6 +1759,7 @@ mod tests {
                 proxy: case.proxy,
                 redirect_policy: case.redirect_policy,
                 http1_only: false,
+                secure_protocols: None,
             };
 
             let session = WinHttpSession::open(&config)
@@ -1712,9 +1769,17 @@ mod tests {
                 .unwrap();
             let proxy_config = ProxyConfig::none();
 
-            let raw = execute_request(&session, &url, "GET", &[], None, &proxy_config, false)
-                .await
-                .unwrap_or_else(|e| panic!("{}: request failed: {e}", case.label));
+            let raw = execute_request(
+                &session,
+                &url,
+                "GET",
+                &[],
+                None,
+                &proxy_config,
+                &crate::tls::TlsConfig::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}: request failed: {e}", case.label));
 
             assert_eq!(raw.status, case.expected_status, "{}", case.label);
         }
@@ -1752,6 +1817,7 @@ mod tests {
             proxy: ProxyAction::Named(server.uri(), None),
             redirect_policy: None,
             http1_only: false,
+            secure_protocols: None,
         };
 
         let session = WinHttpSession::open(&config).expect("session should open");
@@ -1764,9 +1830,17 @@ mod tests {
             .unwrap()
             .apply_to(&mut proxy_config);
 
-        let raw = execute_request(&session, &url, "GET", &[], None, &proxy_config, false)
-            .await
-            .expect("direct bypass request should succeed");
+        let raw = execute_request(
+            &session,
+            &url,
+            "GET",
+            &[],
+            None,
+            &proxy_config,
+            &crate::tls::TlsConfig::default(),
+        )
+        .await
+        .expect("direct bypass request should succeed");
 
         assert_eq!(raw.status, 200);
     }
@@ -1968,6 +2042,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn set_secure_protocols_paths() {
+        let config = SessionConfig {
+            user_agent: String::new(),
+            connect_timeout_ms: 10_000,
+            send_timeout_ms: 0,
+            read_timeout_ms: 0,
+            verbose: false,
+            max_connections_per_host: None,
+            proxy: ProxyAction::Automatic,
+            redirect_policy: None,
+            http1_only: false,
+            secure_protocols: None,
+        };
+        let session = WinHttpSession::open(&config).unwrap();
+        let handle = session.handle.0;
+
+        // TLS 1.2 is accepted by every supported Windows version.
+        set_secure_protocols(handle, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2)
+            .expect("TLS 1.2 mask should be accepted");
+
+        // A mask WinHTTP rejects: the TLS 1.3 bit is dropped on retry, and
+        // the retry fails too, so the error surfaces rather than a silently
+        // narrowed range being applied.
+        let bogus = 0x1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+        assert!(
+            set_secure_protocols(handle, bogus).is_err(),
+            "an unusable protocol mask should propagate the WinHTTP error"
+        );
     }
 
     #[test]

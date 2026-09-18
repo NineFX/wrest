@@ -36,7 +36,7 @@ Each row is a single public API item. Status meanings:
 | `Upgraded` | ✓ | — | 💤 | |
 | `ResponseBuilderExt` trait | ✓ | — | 💤 | |
 | `Certificate` | ✓ | — | 🔒 | WinHTTP uses OS cert store |
-| `Identity` | ✓ | — | 🔒 | WinHTTP uses OS cert store |
+| `Identity` | ✓ | ✓ | ✅ | `client-cert` feature; built from a certificate already in the Windows store rather than from exported key material -- see **TLS** below |
 
 ## Public Modules
 
@@ -49,7 +49,7 @@ Each row is a single public API item. Status meanings:
 | `cookie` | ✓ | — | 💤 | |
 | `dns` | ✓ | — | 🔒 | WinHTTP manages DNS |
 | `multipart` | ✓ | — | 💤 | |
-| `tls` | ✓ | — | 🔒 | WinHTTP always uses SChannel |
+| `tls` | ✓ | ✓ | ✅ | `Version` and `Identity`; `Certificate` / `TlsInfo` have no analogue (WinHTTP validates against the OS store itself) |
 | `retry` | ✓ | ✓ | ✅ | |
 
 ## Traits & Impls
@@ -124,8 +124,8 @@ Each row is a single public API item. Status meanings:
 |--------|---------|-------|--------|-------|
 | `tls_danger_accept_invalid_certs()` / `danger_accept_invalid_certs()` | ✓ | ✓ | ✅ | |
 | `tls_danger_accept_invalid_hostnames()` / `danger_accept_invalid_hostnames()` | ✓ | — | 🔒 | SChannel validates hostnames |
-| `tls_version_min()` / `min_tls_version()` | ✓ | — | 🔒 | SChannel manages negotiation |
-| `tls_version_max()` / `max_tls_version()` | ✓ | — | 🔒 | SChannel manages negotiation |
+| `tls_version_min()` / `min_tls_version()` | ✓ | ✓ | ✅ | `WINHTTP_OPTION_SECURE_PROTOCOLS`; a one-sided range implies the other bound (see `tls::Version`) |
+| `tls_version_max()` / `max_tls_version()` | ✓ | ✓ | ✅ | as above; an implied minimum never drops below TLS 1.2 unless the maximum itself does |
 | `tls_sni()` | ✓ | — | 🔇 | SNI always enabled |
 | `tls_info()` | ✓ | — | 💤 | |
 | `tls_certs_merge()` / `add_root_certificate()` | ✓ | — | 🔒 | OS cert store |
@@ -136,7 +136,7 @@ Each row is a single public API item. Status meanings:
 | `tls_backend_native()` / `use_native_tls()` | ✓ | ✓ | 🔇 | always SChannel |
 | `tls_backend_rustls()` / `use_rustls_tls()` | ✓ | — | N/A | always SChannel |
 | `tls_backend_preconfigured()` / `use_preconfigured_tls()` | ✓ | — | N/A | always SChannel |
-| `identity()` | ✓ | — | 🔒 | client certs via OS store, not exposed |
+| `identity()` | ✓ | ✓ | ✅ | `client-cert` feature; `WINHTTP_OPTION_CLIENT_CERT_CONTEXT` |
 
 ### HTTP Version Preference
 
@@ -463,7 +463,7 @@ are feasible future work unless noted otherwise.
 | Type | Status | Notes |
 |------|--------|-------|
 | `Certificate` — `from_pem()`, `from_der()`, `from_pem_bundle()` | 🔒 | OS cert store |
-| `Identity` — `from_pkcs12_der()`, `from_pkcs8_pem()`, `from_pem()` | 🔒 | OS cert store |
+| `Identity` — `from_pkcs12_der()`, `from_pkcs8_pem()`, `from_pem()` | 💤 | would need `PFXImportCertStore`; wrest instead offers `from_system_store()` / `from_current_user()` / `from_cert_context()`, which reference a store-resident certificate and so support non-exportable (smartcard / TPM / PIV) keys |
 | `Version` — `TLS_1_0`, `TLS_1_1`, `TLS_1_2`, `TLS_1_3` | 🔒 | SChannel negotiates |
 | `TlsInfo` — `peer_certificate()` | 💤 | |
 | `CertificateRevocationList` — `from_pem()`, `from_der()` | 🔒 | rustls only concept |
@@ -534,8 +534,8 @@ are feasible future work unless noted otherwise.
 
 | Status | Count |
 |--------|-------|
-| ✅ Implemented | 166 |
-| 🔇 No-op (`noop-compat`) | 32 |
-| 🔒 Cannot implement (WinHTTP limitation) | 39 |
-| 💤 Not yet implemented | 41 |
-| N/A | 3 |
+| ✅ Implemented | 170 |
+| 🔇 No-op (`noop-compat`) | 31 |
+| 🔒 Cannot implement (WinHTTP limitation) | 33 |
+| 💤 Not yet implemented | 43 |
+| N/A | 4 |

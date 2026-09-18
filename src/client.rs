@@ -10,7 +10,7 @@ use crate::{
     proxy::{self, ProxyConfig},
     redirect,
     request::{self, RequestBuilder},
-    retry,
+    retry, tls,
     url::IntoUrl,
     util,
     winhttp::{self, SessionConfig, WinHttpSession},
@@ -55,8 +55,8 @@ pub(crate) struct ClientInner {
     pub proxy_config: ProxyConfig,
     /// Default headers applied to every request.
     pub default_headers: HeaderMap,
-    /// Whether to ignore certificate errors.
-    pub accept_invalid_certs: bool,
+    /// TLS configuration: certificate validation and client identity.
+    pub tls: tls::TlsConfig,
     /// Whether to restrict requests to HTTPS-only.
     pub https_only: bool,
     /// Whether the configured redirect policy allows following redirects
@@ -84,6 +84,10 @@ pub struct ClientBuilder {
     default_headers: HeaderMap,
     redirect_policy: Option<redirect::Policy>,
     tls_danger_accept_invalid_certs: bool,
+    #[cfg(feature = "client-cert")]
+    identity: Option<tls::Identity>,
+    tls_version_min: Option<tls::Version>,
+    tls_version_max: Option<tls::Version>,
     https_only: bool,
     http1_only: bool,
     error: Option<Error>,
@@ -292,7 +296,7 @@ impl Client {
                 headers,
                 body,
                 &inner.proxy_config,
-                inner.accept_invalid_certs,
+                &inner.tls,
             )
             .await
         };
@@ -383,6 +387,10 @@ impl ClientBuilder {
             default_headers: HeaderMap::new(),
             redirect_policy: None,
             tls_danger_accept_invalid_certs: false,
+            #[cfg(feature = "client-cert")]
+            identity: None,
+            tls_version_min: None,
+            tls_version_max: None,
             https_only: false,
             http1_only: false,
             error: None,
@@ -941,6 +949,93 @@ impl ClientBuilder {
         self.tls_danger_accept_invalid_certs(accept)
     }
 
+    /// Use a client certificate for mutual TLS.
+    ///
+    /// Requires the `client-cert` feature.  Applied to every HTTPS request
+    /// made through the resulting [`Client`] via
+    /// `WINHTTP_OPTION_CLIENT_CERT_CONTEXT`.
+    ///
+    /// # Deviation from reqwest
+    ///
+    /// Same name and signature as
+    /// [`reqwest::ClientBuilder::identity()`](https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html#method.identity),
+    /// but [`tls::Identity`](crate::tls::Identity) is constructed from a
+    /// certificate already in the Windows store rather than from exported
+    /// key material.  See its documentation for why.
+    #[cfg(feature = "client-cert")]
+    #[must_use]
+    pub fn identity(mut self, identity: tls::Identity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// Set the minimum TLS version to allow.
+    ///
+    /// Matches [`reqwest::ClientBuilder::tls_version_min()`](https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html#method.tls_version_min).
+    /// Applied to the WinHTTP session via
+    /// `WINHTTP_OPTION_SECURE_PROTOCOLS`, so it constrains every request
+    /// made through the resulting [`Client`].
+    ///
+    /// By default wrest sets nothing and SChannel negotiates whatever the
+    /// system policy allows.
+    ///
+    /// # Deviation from reqwest
+    ///
+    /// `WINHTTP_OPTION_SECURE_PROTOCOLS` is an *allowlist*, not a floor,
+    /// so a one-sided range implies the other bound: setting only a
+    /// minimum enables everything from it up through TLS 1.3.  See
+    /// [`tls_version_max()`](Self::tls_version_max) for the reverse.
+    ///
+    /// An inverted range (`min > max`) is reported by
+    /// [`build()`](Self::build) as an [`Error::is_builder()`] error.
+    #[must_use]
+    pub fn tls_version_min(mut self, version: tls::Version) -> Self {
+        self.tls_version_min = Some(version);
+        self
+    }
+
+    /// Deprecated alias for [`tls_version_min()`](Self::tls_version_min).
+    #[must_use]
+    pub fn min_tls_version(self, version: tls::Version) -> Self {
+        self.tls_version_min(version)
+    }
+
+    /// Set the maximum TLS version to allow.
+    ///
+    /// Matches [`reqwest::ClientBuilder::tls_version_max()`](https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html#method.tls_version_max).
+    /// Applied to the WinHTTP session via
+    /// `WINHTTP_OPTION_SECURE_PROTOCOLS`, so it constrains every request
+    /// made through the resulting [`Client`].
+    ///
+    /// # Deviation from reqwest
+    ///
+    /// Because `WINHTTP_OPTION_SECURE_PROTOCOLS` is an allowlist, a
+    /// maximum with no minimum implies one.  wrest uses TLS 1.2 so that
+    /// capping the maximum never silently re-enables TLS 1.0/1.1; if the
+    /// maximum is itself below TLS 1.2 the caller has asked for legacy
+    /// protocols and the implied minimum drops to TLS 1.0.  Set
+    /// [`tls_version_min()`](Self::tls_version_min) explicitly to avoid
+    /// relying on that.
+    ///
+    /// # TLS 1.3
+    ///
+    /// The `WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3` flag requires Windows 11
+    /// / Server 2022.  On older Windows, a range that also permits lower
+    /// versions falls back to those; a TLS-1.3-only range fails in
+    /// [`build()`](Self::build) rather than quietly negotiating something
+    /// weaker.
+    #[must_use]
+    pub fn tls_version_max(mut self, version: tls::Version) -> Self {
+        self.tls_version_max = Some(version);
+        self
+    }
+
+    /// Deprecated alias for [`tls_version_max()`](Self::tls_version_max).
+    #[must_use]
+    pub fn max_tls_version(self, version: tls::Version) -> Self {
+        self.tls_version_max(version)
+    }
+
     /// Restrict the client to HTTPS-only requests.
     ///
     /// When enabled, any request to an `http://` URL will return an
@@ -1019,6 +1114,16 @@ impl ClientBuilder {
         let send_timeout_ms = self.send_timeout.map_or(0, to_ms);
         let read_timeout_ms = self.read_timeout.map_or(0, to_ms);
 
+        // Translate the TLS version range into a WinHTTP protocol
+        // allowlist.  `None` leaves the session at the system default.
+        let secure_protocols = tls::protocol_mask(self.tls_version_min, self.tls_version_max)
+            .map_err(|()| {
+                Error::builder(format!(
+                    "tls_version_min ({:?}) is greater than tls_version_max ({:?})",
+                    self.tls_version_min, self.tls_version_max
+                ))
+            })?;
+
         let redirect_follows = !matches!(
             self.redirect_policy.as_ref().map(|p| &p.inner),
             Some(redirect::PolicyInner::None)
@@ -1034,6 +1139,7 @@ impl ClientBuilder {
             proxy: session_proxy,
             redirect_policy: self.redirect_policy,
             http1_only: self.http1_only,
+            secure_protocols,
         };
 
         let session = WinHttpSession::open(&config)?;
@@ -1054,7 +1160,11 @@ impl ClientBuilder {
                 total_timeout: self.timeout,
                 proxy_config,
                 default_headers: self.default_headers,
-                accept_invalid_certs: self.tls_danger_accept_invalid_certs,
+                tls: tls::TlsConfig {
+                    accept_invalid_certs: self.tls_danger_accept_invalid_certs,
+                    #[cfg(feature = "client-cert")]
+                    identity: self.identity,
+                },
                 https_only: self.https_only,
                 redirect_follows,
                 retry_policy: self
@@ -1323,6 +1433,26 @@ mod tests {
                 |b| b.tls_danger_accept_invalid_certs,
                 "tls_danger_accept_invalid_certs",
             ),
+            (
+                |b| b.tls_version_min(tls::Version::TLS_1_2),
+                |b| b.tls_version_min == Some(tls::Version::TLS_1_2),
+                "tls_version_min",
+            ),
+            (
+                |b| b.min_tls_version(tls::Version::TLS_1_2),
+                |b| b.tls_version_min == Some(tls::Version::TLS_1_2),
+                "min_tls_version alias",
+            ),
+            (
+                |b| b.tls_version_max(tls::Version::TLS_1_3),
+                |b| b.tls_version_max == Some(tls::Version::TLS_1_3),
+                "tls_version_max",
+            ),
+            (
+                |b| b.max_tls_version(tls::Version::TLS_1_3),
+                |b| b.tls_version_max == Some(tls::Version::TLS_1_3),
+                "max_tls_version alias",
+            ),
             (|b| b.http1_only(), |b| b.http1_only, "http1_only"),
             (|b| b.no_proxy(), |b| b.proxy_config.is_some(), "no_proxy"),
             // Duration::MAX should saturate to i32::MAX, not panic
@@ -1378,7 +1508,7 @@ mod tests {
             .https_only(true)
             .build()
             .unwrap();
-        assert!(client.inner.accept_invalid_certs);
+        assert!(client.inner.tls.accept_invalid_certs);
         assert!(client.inner.https_only);
 
         // Check the alias too.
@@ -1386,7 +1516,38 @@ mod tests {
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap();
-        assert!(client2.inner.accept_invalid_certs);
+        assert!(client2.inner.tls.accept_invalid_certs);
+    }
+
+    #[test]
+    fn tls_version_range_builds() {
+        // Ranges SChannel supports everywhere: the session option must be
+        // accepted, not just stored.
+        for (min, max) in [
+            (Some(tls::Version::TLS_1_2), None),
+            (None, Some(tls::Version::TLS_1_2)),
+            (Some(tls::Version::TLS_1_0), Some(tls::Version::TLS_1_2)),
+            (Some(tls::Version::TLS_1_2), Some(tls::Version::TLS_1_3)),
+        ] {
+            let mut b = Client::builder();
+            if let Some(min) = min {
+                b = b.tls_version_min(min);
+            }
+            if let Some(max) = max {
+                b = b.tls_version_max(max);
+            }
+            assert!(b.build().is_ok(), "{min:?}..={max:?} should build");
+        }
+    }
+
+    #[test]
+    fn tls_version_inverted_range_is_builder_error() {
+        let err = Client::builder()
+            .tls_version_min(tls::Version::TLS_1_3)
+            .tls_version_max(tls::Version::TLS_1_1)
+            .build()
+            .unwrap_err();
+        assert!(err.is_builder(), "inverted TLS range should be a builder error");
     }
 
     #[tokio::test]

@@ -134,6 +134,7 @@ minimum, then re-add only what you need.
 | `zstd` | No | `ClientBuilder::zstd()` no-op toggle; forwards to `reqwest/zstd` |
 | `stream` | No | `Stream`-based body support. Always available natively; forwards to `reqwest/stream` |
 | **`tracing`** | No | Emit diagnostics via the [`tracing`](https://docs.rs/tracing) crate -- request lifecycle, proxy resolution, charset decoding, and more |
+| `client-cert` | No | Client certificates from the Windows certificate store (`tls::Identity`, `ClientBuilder::identity()`). No private key material is exported, so smartcard / TPM / PIV keys work. Inert on the reqwest passthrough |
 | **`noop-compat`** | No | Enables ~31 no-op reqwest stubs (connection pool, TCP options, HTTP/2 tuning, TLS backend selection, etc.) so reqwest-targeting code compiles without changes. Compression toggles require both this and the respective feature |
 | **`panicking-compat`** | No | `Client::new()` and `impl Default for Client` (these panic on failure -- prefer `Client::builder().build()`) |
 | **`always-reqwest`** | No | Forces the [`reqwest`](https://docs.rs/reqwest) path even on Windows -- see [Cross-platform & A/B testing](#cross-platform--ab-testing) |
@@ -148,8 +149,9 @@ they haven't been added yet:
 
 - **No blocking API** -- async only
 - **No cookies, multipart, or WebSocket** -- not yet implemented
-- **No custom DNS or TLS configuration** -- WinHTTP uses SChannel and
-  the OS certificate store (`tls_danger_accept_invalid_certs` *is* supported)
+- **No custom DNS or certificate configuration** -- WinHTTP uses SChannel and
+  the OS certificate store (`tls_danger_accept_invalid_certs` and the
+  `tls_version_min()` / `tls_version_max()` protocol pins *are* supported)
 - **No SOCKS proxies** -- WinHTTP only supports HTTP CONNECT
 - **Redirects** -- `Policy::limited()` and `Policy::none()` only;
   `Policy::custom()` is not available
