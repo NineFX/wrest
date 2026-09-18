@@ -148,8 +148,9 @@ they haven't been added yet:
 
 - **No blocking API** -- async only
 - **No cookies, multipart, or WebSocket** -- not yet implemented
-- **No custom DNS or TLS configuration** -- WinHTTP uses SChannel and
-  the OS certificate store (`tls_danger_accept_invalid_certs` *is* supported)
+- **No custom DNS or certificate configuration** -- WinHTTP uses SChannel and
+  the OS certificate store (`tls_danger_accept_invalid_certs` and the
+  `tls_version_min()` / `tls_version_max()` protocol pins *are* supported)
 - **No SOCKS proxies** -- WinHTTP only supports HTTP CONNECT
 - **Redirects** -- `Policy::limited()` and `Policy::none()` only;
   `Policy::custom()` is not available

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to Semantic Versioning.
 
+## Unreleased
+
+### Added
+- TLS version pinning: `ClientBuilder::tls_version_min()` / `tls_version_max()` (with the reqwest-compatible `min_tls_version()` / `max_tls_version()` aliases) and the `wrest::tls::Version` type, matching the reqwest 0.13 API. The range is applied to the WinHTTP session via `WINHTTP_OPTION_SECURE_PROTOCOLS`. Because that option is an explicit allowlist rather than a floor, a one-sided range implies the other bound: `tls_version_min()` alone permits everything up through TLS 1.3, and `tls_version_max()` alone keeps an implied minimum of TLS 1.2 so that capping the maximum can never silently re-enable TLS 1.0/1.1 (the implied minimum drops to TLS 1.0 only when the requested maximum is itself below TLS 1.2). An inverted range is an `Error::is_builder()` error from `build()`. The TLS 1.3 flag requires Windows 11 / Server 2022; on older Windows a range that also permits lower versions falls back to those, while a TLS-1.3-only range fails in `build()` rather than quietly negotiating something weaker.
+
 ## 0.5.7
 
 ### Fixed

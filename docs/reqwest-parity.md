@@ -49,7 +49,7 @@ Each row is a single public API item. Status meanings:
 | `cookie` | ✓ | — | 💤 | |
 | `dns` | ✓ | — | 🔒 | WinHTTP manages DNS |
 | `multipart` | ✓ | — | 💤 | |
-| `tls` | ✓ | — | 🔒 | WinHTTP always uses SChannel |
+| `tls` | ✓ | ✓ | ✅ | `Version` only -- WinHTTP always uses SChannel, so `Certificate` / `Identity` / `TlsInfo` have no analogue |
 | `retry` | ✓ | ✓ | ✅ | |
 
 ## Traits & Impls
@@ -124,8 +124,8 @@ Each row is a single public API item. Status meanings:
 |--------|---------|-------|--------|-------|
 | `tls_danger_accept_invalid_certs()` / `danger_accept_invalid_certs()` | ✓ | ✓ | ✅ | |
 | `tls_danger_accept_invalid_hostnames()` / `danger_accept_invalid_hostnames()` | ✓ | — | 🔒 | SChannel validates hostnames |
-| `tls_version_min()` / `min_tls_version()` | ✓ | — | 🔒 | SChannel manages negotiation |
-| `tls_version_max()` / `max_tls_version()` | ✓ | — | 🔒 | SChannel manages negotiation |
+| `tls_version_min()` / `min_tls_version()` | ✓ | ✓ | ✅ | `WINHTTP_OPTION_SECURE_PROTOCOLS`; a one-sided range implies the other bound (see `tls::Version`) |
+| `tls_version_max()` / `max_tls_version()` | ✓ | ✓ | ✅ | as above; an implied minimum never drops below TLS 1.2 unless the maximum itself does |
 | `tls_sni()` | ✓ | — | 🔇 | SNI always enabled |
 | `tls_info()` | ✓ | — | 💤 | |
 | `tls_certs_merge()` / `add_root_certificate()` | ✓ | — | 🔒 | OS cert store |

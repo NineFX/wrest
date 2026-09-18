@@ -49,6 +49,9 @@ pub mod retry;
 pub(crate) mod threadpool;
 #[cfg(native_winhttp)]
 mod timer;
+/// TLS configuration types.
+#[cfg(native_winhttp)]
+pub mod tls;
 #[cfg(native_winhttp)]
 pub(crate) mod url;
 #[cfg(native_winhttp)]
@@ -112,6 +115,18 @@ pub type ParseError = <reqwest::Url as std::str::FromStr>::Err;
 pub mod proxy {
     pub use reqwest::{NoProxy, Proxy};
 }
+
+/// TLS configuration types.
+///
+/// reqwest gates its `tls` module behind its TLS features, so on the
+/// passthrough this module exists only when `default-tls` or `native-tls`
+/// is enabled.  The native backend always exposes it -- WinHTTP is always
+/// built against SChannel.
+#[cfg(all(
+    not(native_winhttp),
+    any(feature = "default-tls", feature = "native-tls")
+))]
+pub use reqwest::tls;
 
 // ============================================================
 // Common re-exports (identical on native backend and reqwest passthrough)
