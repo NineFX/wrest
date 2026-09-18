@@ -205,10 +205,13 @@ mod tests {
         // path rather than the open failure path.
         let err = find_cert_by_sha1(StoreLocation::CurrentUser, "MY", &[0u8; 20])
             .expect_err("all-zero thumbprint should not match");
-        let msg = err.to_string();
+        assert!(err.is_builder(), "a missing certificate is a builder error");
+        // `Display` is the error kind alone; the detail lives in the
+        // source chain, which `Debug` prints.
+        let detail = format!("{err:?}");
         assert!(
-            msg.contains("no certificate with SHA-1 thumbprint"),
-            "expected a not-found message, got: {msg}"
+            detail.contains("no certificate with SHA-1 thumbprint"),
+            "expected a not-found detail, got: {detail}"
         );
     }
 

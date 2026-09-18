@@ -449,7 +449,10 @@ mod identity_tests {
     fn missing_certificate_is_an_error_not_a_panic() {
         let err = Identity::from_current_user(&[0u8; 20])
             .expect_err("all-zero thumbprint should not resolve");
-        assert!(err.to_string().contains("no certificate"), "got {err}");
+        assert!(err.is_builder(), "a missing certificate is a builder error");
+        // Detail is in the source chain (`Debug`), not `Display`.
+        let detail = format!("{err:?}");
+        assert!(detail.contains("no certificate"), "got {detail}");
     }
 
     #[test]
