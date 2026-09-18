@@ -415,8 +415,10 @@ fn decode_utf16le(data: &[u8]) -> Result<String, Error> {
         return Err(Error::decode("invalid UTF-16LE: odd byte count"));
     }
     let words: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     string_from_utf16(&words, "invalid UTF-16LE")
 }
@@ -428,8 +430,10 @@ fn decode_utf16be(data: &[u8]) -> Result<String, Error> {
         return Err(Error::decode("invalid UTF-16BE: odd byte count"));
     }
     let words: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_be_bytes(*c))
         .collect();
     string_from_utf16(&words, "invalid UTF-16BE")
 }
