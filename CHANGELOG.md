@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to Semantic Versioning.
 
+## Unreleased
+
+### Security
+- Dependencies: bumped `h2` 0.4.15 -> 0.4.19 and `rustls` 0.23.41 -> 0.23.45 (pulling `rustls-webpki` 0.103.15, `aws-lc-rs` 1.18.1, `aws-lc-sys` 0.45.0) to clear two `cargo audit` advisories:
+  - [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258) - `h2` unbounded empty DATA frames.
+  - [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285) - `rustls` incorrectly accepted TLS 1.3 handshake messages across encryption level boundaries.
+
+  Both crates are reached only through the `reqwest` passthrough backend used off Windows; the native WinHTTP code path does not use either, so this is a lockfile-only change with no effect on the native backend.
+
 ## 0.5.7
 
 ### Fixed
