@@ -183,6 +183,9 @@ jobs:
     - name: Start go-httpbin
       uses: ./.github/actions/start-httpbin
 
+    - name: Start TLS test server
+      uses: ./.github/actions/start-mtls
+
     - name: Generate coverage
       run: cargo llvm-cov --features __all-native-features --lcov --output-path lcov.info
 
@@ -192,6 +195,9 @@ jobs:
       run: |
         echo "::group::go-httpbin log"
         cat httpbin.log || echo "(no httpbin.log found)"
+        echo "::endgroup::"
+        echo "::group::mtls-server log"
+        cat mtls-server.log || echo "(no mtls-server.log found)"
         echo "::endgroup::"
 
     - name: Upload to Codecov
