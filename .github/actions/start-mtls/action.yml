@@ -22,6 +22,7 @@ runs:
 
     - name: Create client certificate in CurrentUser\My
       shell: pwsh
+      timeout-minutes: 2
       run: |
         $ErrorActionPreference = 'Stop'
 
@@ -47,6 +48,7 @@ runs:
       # the server was reaped before the test step ran, and the tests saw
       # ERROR_WINHTTP_CANNOT_CONNECT (12029) rather than a handshake.
       shell: bash
+      timeout-minutes: 5
       run: |
         set -euo pipefail
         (cd .github/ci-tools/mtls-server && go build -o mtls-server.exe .)
@@ -75,14 +77,22 @@ runs:
     - name: Trust the server certificate
       # The redirect test drives a default client, so the chain has to
       # validate; the mTLS tests disable validation and do not need this.
+      #
+      # LocalMachine, not CurrentUser: adding a root for the current user
+      # raises a consent dialog, which on a headless runner blocks until
+      # the job times out.  The machine store needs administrator rights,
+      # which GitHub runners have, and prompts for nothing.  The timeout is
+      # a backstop so any future prompt fails fast instead of burning the
+      # job's full allowance.
       shell: pwsh
+      timeout-minutes: 2
       run: |
         $ErrorActionPreference = 'Stop'
         if (-not (Test-Path mtls-server-cert.der)) {
           throw 'mtls-server did not write its certificate'
         }
         $cert = Import-Certificate -FilePath mtls-server-cert.der `
-          -CertStoreLocation 'Cert:\CurrentUser\Root'
+          -CertStoreLocation 'Cert:\LocalMachine\Root'
         Write-Host "trusted server certificate $($cert.Thumbprint)"
 
         "WREST_TLS_URL=https://127.0.0.1:8444" >> $env:GITHUB_ENV
