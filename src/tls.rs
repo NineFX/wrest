@@ -629,6 +629,7 @@ mod identity_tests {
     /// question. CI provides a disposable certificate so this cannot
     /// disturb the tests using the main one.
     #[tokio::test]
+    #[ignore = "destructive: consumes the disposable certificate, run via --ignored"]
     async fn identity_after_certificate_is_deleted() {
         let (Ok(url), Ok(raw)) =
             (std::env::var("WREST_MTLS_URL"), std::env::var("WREST_MTLS_DISPOSABLE_THUMBPRINT"))
