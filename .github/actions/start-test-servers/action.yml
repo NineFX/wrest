@@ -69,7 +69,6 @@ runs:
     - name: Trust the server certificate
       # LocalMachine, not CurrentUser: trusting a root for the current user
       # raises a consent dialog that never returns on a headless runner.
-      # The timeout is a backstop against any future prompt.
       if: runner.os == 'Windows'
       shell: pwsh
       run: |

@@ -13,15 +13,17 @@
 #![expect(clippy::tests_outside_test_module)]
 
 use std::time::Duration;
-use wrest::{Client, StatusCode, tls::Identity};
+use wrest::{
+    Client, StatusCode,
+    tls::{Identity, StoreLocation},
+};
 
 /// The CI-provided environment, or `None` when these tests should skip.
 ///
-/// Also asserts the server is reachable. Without that check a dead
-/// server is indistinguishable from a rejected handshake, which would
-/// let [`without_an_identity_the_handshake_fails`] pass for entirely the
-/// wrong reason -- as it did on the first CI run, when the server had
-/// been reaped before the tests started.
+/// Also asserts the server is reachable: a dead server is
+/// indistinguishable from a rejected handshake, so without this check
+/// [`without_an_identity_the_handshake_fails`] would pass whether or not
+/// the server is running.
 fn mtls_env() -> Option<(String, [u8; 20])> {
     let url = std::env::var("WREST_MTLS_URL").ok()?;
     let thumbprint = std::env::var("WREST_MTLS_THUMBPRINT").ok()?;
@@ -74,7 +76,7 @@ async fn client_certificate_is_presented_to_the_server() {
         return;
     };
 
-    let identity = Identity::from_current_user(&thumbprint)
+    let identity = Identity::from_windows_store(StoreLocation::CurrentUser, "MY", &thumbprint)
         .expect("CI installs this certificate in CurrentUser\\MY");
 
     let client = Client::builder()

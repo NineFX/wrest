@@ -292,18 +292,6 @@ impl Identity {
         })
     }
 
-    /// Look up a certificate by SHA-1 thumbprint in `CurrentUser\MY`.
-    ///
-    /// Shorthand for the common case; see
-    /// [`from_windows_store()`](Self::from_windows_store).
-    ///
-    /// # Errors
-    ///
-    /// As [`from_windows_store()`](Self::from_windows_store).
-    pub fn from_current_user(sha1_thumbprint: &[u8; 20]) -> Result<Self, crate::Error> {
-        Self::from_windows_store(StoreLocation::CurrentUser, "MY", sha1_thumbprint)
-    }
-
     /// Adopt a `CERT_CONTEXT` obtained elsewhere -- for example from the
     /// [`schannel`](https://docs.rs/schannel) crate's `CertContext`, or
     /// from a certificate-selection dialog.
@@ -443,7 +431,7 @@ mod identity_tests {
 
     #[test]
     fn missing_certificate_is_an_error_not_a_panic() {
-        let err = Identity::from_current_user(&[0u8; 20])
+        let err = Identity::from_windows_store(StoreLocation::CurrentUser, "MY", &[0u8; 20])
             .expect_err("all-zero thumbprint should not resolve");
         assert!(err.is_builder(), "a missing certificate is a builder error");
         // Detail is in the source chain (`Debug`), not `Display`.
