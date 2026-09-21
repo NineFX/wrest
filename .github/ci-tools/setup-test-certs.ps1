@@ -55,9 +55,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$ClientSubject = 'CN=wrest-mtls-test-client'
-$DisposableSubject = 'CN=wrest-mtls-disposable-client'
-$ServerSubject = 'CN=wrest-mtls-test-server'
+# Every certificate this creates is unique to the run, so a leftover can
+# never be mistaken for a current one, and two runs on one machine cannot
+# delete each other's certificates.  They share a prefix so cleanup can
+# find them all.
+$SubjectPrefix = 'CN=wrest-test-'
+$RunId = [guid]::NewGuid().ToString('N').Substring(0, 12)
 
 # Append to GITHUB_ENV when running under Actions, and set the variable in
 # the current session either way -- a .ps1 shares the caller's process, so
@@ -73,11 +76,19 @@ function Publish-Variable {
 }
 
 function Remove-TestCertificates {
+    param(
+        # Remove only certificates that have expired.  Creating a new
+        # certificate uses this, so tidying up after earlier runs cannot
+        # disturb a run happening concurrently on the same machine.
+        [switch] $ExpiredOnly
+    )
+
     $stores = @(
         'Cert:\CurrentUser\My',
         'Cert:\CurrentUser\Root',
         'Cert:\LocalMachine\Root'
     )
+    $now = Get-Date
 
     foreach ($store in $stores) {
         if (-not (Test-Path $store)) { continue }
@@ -85,13 +96,12 @@ function Remove-TestCertificates {
         # A store we lack rights to is not an error: CI runs elevated, a
         # developer machine may not.
         $certs = Get-ChildItem $store -ErrorAction SilentlyContinue | Where-Object {
-            $_.Subject -eq $ClientSubject -or
-            $_.Subject -eq $DisposableSubject -or
-            $_.Subject -eq $ServerSubject
+            $_.Subject -like "$SubjectPrefix*" -and
+            (-not $ExpiredOnly -or $_.NotAfter -lt $now)
         }
 
         foreach ($cert in $certs) {
-            Write-Host "removing $($cert.Thumbprint) from $store"
+            Write-Host "removing $($cert.Subject) $($cert.Thumbprint) from $store"
             Remove-Item $cert.PSPath -Force -ErrorAction SilentlyContinue
         }
     }
@@ -103,13 +113,11 @@ if ($Cleanup) {
 }
 
 if ($ClientCertificate) {
-    # Drop stale certificates first so a repeated run cannot leave several
-    # candidates in the store.  Matters on self-hosted runners and laptops,
-    # not on ephemeral CI.
-    Remove-TestCertificates
+    # Only expired leftovers: a concurrent run's certificates must survive.
+    Remove-TestCertificates -ExpiredOnly
 
     $cert = New-SelfSignedCertificate `
-        -Subject $ClientSubject `
+        -Subject "${SubjectPrefix}client-$RunId" `
         -CertStoreLocation 'Cert:\CurrentUser\My' `
         -KeyExportPolicy NonExportable `
         -KeyUsage DigitalSignature, KeyEncipherment `
@@ -124,10 +132,8 @@ if ($ClientCertificate) {
 }
 
 if ($DisposableCertificate) {
-    # Deliberately does not purge first: the client certificate created
-    # above must survive.
     $cert = New-SelfSignedCertificate `
-        -Subject $DisposableSubject `
+        -Subject "${SubjectPrefix}disposable-$RunId" `
         -CertStoreLocation 'Cert:\CurrentUser\My' `
         -KeyExportPolicy NonExportable `
         -KeyUsage DigitalSignature, KeyEncipherment `

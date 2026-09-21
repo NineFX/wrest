@@ -241,7 +241,7 @@ func selfSignedServerCert() (tls.Certificate, []byte, error) {
 
 	template := x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "wrest-mtls-test-server"},
+		Subject:               pkix.Name{CommonName: "wrest-test-server"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,

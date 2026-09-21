@@ -147,10 +147,6 @@ async fn ci_certificate_appears_in_the_listing() {
             panic!("installed certificate is missing from the listing; saw {seen:?}")
         });
 
-    assert!(
-        found.subject.contains("wrest-mtls-test-client"),
-        "unexpected subject: {}",
-        found.subject
-    );
+    assert!(found.subject.contains("wrest-test-client"), "unexpected subject: {}", found.subject);
     assert!(found.not_after > std::time::SystemTime::now(), "listed an expired certificate");
 }
