@@ -195,7 +195,10 @@ jobs:
       uses: codecov/codecov-action@v6
       with:
         files: lcov.info
-        fail_ci_if_error: true
+        # Forks are not registered with Codecov, so the upload fails with
+        # "Repository not found" and would otherwise fail a job whose
+        # tests all passed.
+        fail_ci_if_error: false
         use_oidc: true
 
   security:
