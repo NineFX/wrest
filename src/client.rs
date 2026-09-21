@@ -1640,6 +1640,59 @@ mod tests {
         );
     }
 
+    /// Abandoning a response must still close its request handle.
+    ///
+    /// The happy path reads the body to completion, which is the case
+    /// most likely to be correct. Real code drops responses early -- an
+    /// unexpected status, a `?` on a header check -- and that is where a
+    /// handle is most easily stranded.
+    #[tokio::test]
+    async fn dropping_responses_unread_does_not_leak_handles() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const WARMUP: usize = 10;
+        const ITERATIONS: usize = 150;
+
+        // A body large enough that it cannot have been fully buffered by
+        // the time the response is dropped.
+        let body = "x".repeat(512 * 1024);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/abandon"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = Client::builder().build().expect("client should build");
+        let url = format!("{}/abandon", server.uri());
+
+        for _ in 0..WARMUP {
+            drop(client.get(&url).send().await.expect("warmup request"));
+        }
+
+        let before = process_handle_count();
+        for _ in 0..ITERATIONS {
+            // Dropped without reading a single byte of the body.
+            drop(
+                client
+                    .get(&url)
+                    .send()
+                    .await
+                    .expect("request should succeed"),
+            );
+        }
+        let after = process_handle_count();
+
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 32,
+            "handle count grew by {growth} over {ITERATIONS} abandoned responses \
+             ({before} -> {after})"
+        );
+    }
+
     #[tokio::test]
     async fn https_only_rejects_http() {
         let client = Client::builder().https_only(true).build().unwrap();

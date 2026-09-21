@@ -94,6 +94,14 @@ jobs:
       if: steps.resolve.outputs.should-run-full-checks == 'true'
       run: cargo test --all-targets ${{ steps.resolve.outputs.flags }} --verbose
 
+    - name: Report observed certificate-deletion behaviour
+      # libtest captures output from passing tests, and what this one
+      # records is only interesting when it passes.
+      if: matrix.os == 'windows-latest' && matrix.mode == 'all'
+      run: >-
+        cargo test --lib ${{ steps.resolve.outputs.flags }}
+        identity_after_certificate_is_deleted -- --nocapture
+
     - name: Diagnose failure
       if: failure() && steps.resolve.outputs.should-run-full-checks == 'true'
       shell: bash
