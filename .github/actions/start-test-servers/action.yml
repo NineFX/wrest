@@ -26,14 +26,12 @@ runs:
     - name: Create client certificate
       if: runner.os == 'Windows'
       shell: pwsh
-      timeout-minutes: 2
       run: ./.github/ci-tools/setup-test-certs.ps1 -ClientCertificate
 
     - name: Start test server
       # Launch from bash with `&`: Start-Process -NoNewWindow does not
       # survive the step boundary, and the server has to outlive it.
       shell: bash
-      timeout-minutes: 5
       run: |
         set -euo pipefail
 
@@ -74,7 +72,6 @@ runs:
       # The timeout is a backstop against any future prompt.
       if: runner.os == 'Windows'
       shell: pwsh
-      timeout-minutes: 2
       run: |
         ./.github/ci-tools/setup-test-certs.ps1 `
           -TrustServerCertificate mtls-server-cert.der `

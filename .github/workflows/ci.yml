@@ -81,6 +81,9 @@ jobs:
       # flakiness; CI serves the same endpoints locally, plus the TLS
       # origins the redirect and mutual-TLS tests need.
       if: steps.resolve.outputs.should-run-full-checks == 'true'
+      # timeout-minutes is not valid on composite action steps, so the
+      # backstop against a hanging certificate prompt lives here.
+      timeout-minutes: 8
       uses: ./.github/actions/start-test-servers
 
     - name: Run clippy
@@ -167,6 +170,7 @@ jobs:
         tool: cargo-llvm-cov
 
     - name: Start test servers
+      timeout-minutes: 8
       uses: ./.github/actions/start-test-servers
 
     - name: Generate coverage
