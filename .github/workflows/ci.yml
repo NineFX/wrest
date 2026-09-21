@@ -84,6 +84,13 @@ jobs:
       if: steps.resolve.outputs.should-run-full-checks == 'true'
       uses: ./.github/actions/start-httpbin
 
+    - name: Start mTLS test server
+      # Windows + all-native only: the client certificate lives in the
+      # Windows store and the test needs the `client-cert` feature, which
+      # only `__all-native-features` turns on.
+      if: matrix.os == 'windows-latest' && matrix.mode == 'all'
+      uses: ./.github/actions/start-mtls
+
     - name: Run clippy
       if: steps.resolve.outputs.should-run-full-checks == 'true'
       run: cargo clippy --all-targets ${{ steps.resolve.outputs.flags }} -- -D warnings
@@ -98,6 +105,9 @@ jobs:
       run: |
         echo "::group::go-httpbin log"
         cat httpbin.log || echo "(no httpbin.log found)"
+        echo "::endgroup::"
+        echo "::group::mtls-server log"
+        cat mtls-server.log mtls-server.err.log 2>/dev/null || echo "(no mtls-server logs found)"
         echo "::endgroup::"
 
     - name: Check library (MSRV)

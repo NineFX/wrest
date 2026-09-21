@@ -1,0 +1,76 @@
+name: 'Start mTLS test server'
+description: >
+  Windows only.  Creates a client certificate in CurrentUser\My with a
+  non-exportable private key, starts a TLS server requiring a client
+  certificate, and exports WREST_MTLS_URL and WREST_MTLS_THUMBPRINT for
+  tests/mtls.rs.  The key is non-exportable so the handshake can only
+  succeed if SChannel drives it in place.
+
+  Like start-httpbin, the server is left running after the job; GitHub
+  runners are reaped automatically.
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: '.github/ci-tools/mtls-server/go.mod'
+
+    - name: Create client certificate in CurrentUser\My
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        # A fresh certificate per run, so a stale one from an earlier run
+        # can never make the test pass.
+        $cert = New-SelfSignedCertificate `
+          -Subject 'CN=wrest-mtls-test-client' `
+          -CertStoreLocation 'Cert:\CurrentUser\My' `
+          -KeyExportPolicy NonExportable `
+          -KeyUsage DigitalSignature,KeyEncipherment `
+          -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2') `
+          -NotAfter (Get-Date).AddDays(1)
+
+        $thumbprint = $cert.Thumbprint
+        if (-not $thumbprint) { throw 'certificate created without a thumbprint' }
+        Write-Host "created client certificate $thumbprint"
+
+        "WREST_MTLS_THUMBPRINT=$thumbprint" >> $env:GITHUB_ENV
+
+    - name: Start mTLS server
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        Start-Process -FilePath 'go' `
+          -ArgumentList 'run', '.', '-addr', '127.0.0.1:8443' `
+          -WorkingDirectory '.github/ci-tools/mtls-server' `
+          -RedirectStandardOutput 'mtls-server.log' `
+          -RedirectStandardError 'mtls-server.err.log' `
+          -NoNewWindow
+
+        # `go run` compiles first, so allow well beyond the server's own
+        # startup time before giving up.
+        $ready = $false
+        foreach ($_ in 1..60) {
+          try {
+            $connection = New-Object System.Net.Sockets.TcpClient
+            $connection.Connect('127.0.0.1', 8443)
+            $connection.Close()
+            $ready = $true
+            break
+          } catch {
+            Start-Sleep -Milliseconds 500
+          }
+        }
+
+        if (-not $ready) {
+          Write-Host '::error::mtls-server failed to start within 30s'
+          Get-Content mtls-server.log -ErrorAction SilentlyContinue
+          Get-Content mtls-server.err.log -ErrorAction SilentlyContinue
+          exit 1
+        }
+
+        Write-Host 'mtls-server is accepting connections'
+        "WREST_MTLS_URL=https://127.0.0.1:8443" >> $env:GITHUB_ENV
