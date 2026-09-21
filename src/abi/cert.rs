@@ -7,11 +7,16 @@
 
 use super::{last_win32_error, to_wide};
 use crate::Error;
+use windows_sys::Win32::Foundation::FILETIME;
 use windows_sys::Win32::Security::Cryptography::{
-    CERT_CONTEXT, CERT_FIND_HASH, CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG,
-    CERT_SYSTEM_STORE_CURRENT_USER, CERT_SYSTEM_STORE_LOCAL_MACHINE, CRYPT_INTEGER_BLOB,
-    CertCloseStore, CertDuplicateCertificateContext, CertFindCertificateInStore,
-    CertFreeCertificateContext, CertOpenStore, HCERTSTORE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+    CERT_CONTEXT, CERT_FIND_HASH, CERT_KEY_PROV_INFO_PROP_ID, CERT_NAME_ISSUER_FLAG,
+    CERT_NAME_SIMPLE_DISPLAY_TYPE, CERT_SHA1_HASH_PROP_ID, CERT_STORE_PROV_SYSTEM_W,
+    CERT_STORE_READONLY_FLAG, CERT_SYSTEM_STORE_CURRENT_USER, CERT_SYSTEM_STORE_LOCAL_MACHINE,
+    CRYPT_INTEGER_BLOB, CTL_USAGE, CertCloseStore, CertDuplicateCertificateContext,
+    CertEnumCertificatesInStore, CertFindCertificateInStore, CertFreeCertificateContext,
+    CertGetCertificateContextProperty, CertGetEnhancedKeyUsage, CertGetNameStringW, CertOpenStore,
+    CertVerifyTimeValidity, HCERTSTORE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+    szOID_PKIX_KP_CLIENT_AUTH,
 };
 
 /// Which system store location to search.
@@ -60,11 +65,7 @@ impl Drop for CertStore {
 ///
 /// Returns the Win32 error if the store cannot be opened, or a
 /// not-found error if no certificate in it has that thumbprint.
-pub(crate) fn find_cert_by_sha1(
-    location: StoreLocation,
-    store_name: &str,
-    sha1: &[u8; 20],
-) -> Result<*const CERT_CONTEXT, Error> {
+fn open_store(location: StoreLocation, store_name: &str) -> Result<CertStore, Error> {
     let name_wide = to_wide(store_name);
 
     // SAFETY: `CERT_STORE_PROV_SYSTEM_W` selects the system-store
@@ -82,7 +83,15 @@ pub(crate) fn find_cert_by_sha1(
     if handle.is_null() {
         return Err(last_win32_error());
     }
-    let store = CertStore(handle);
+    Ok(CertStore(handle))
+}
+
+pub(crate) fn find_cert_by_sha1(
+    location: StoreLocation,
+    store_name: &str,
+    sha1: &[u8; 20],
+) -> Result<*const CERT_CONTEXT, Error> {
+    let store = open_store(location, store_name)?;
 
     let mut hash = *sha1;
     let blob = CRYPT_INTEGER_BLOB {
@@ -116,6 +125,213 @@ pub(crate) fn find_cert_by_sha1(
     // The found context is owned by us; the store closes on drop below
     // without the force flag, which leaves the context valid.
     Ok(found.cast_const())
+}
+
+/// Metadata for one certificate, read without touching its private key.
+pub(crate) struct RawCertificateInfo {
+    pub sha1: [u8; 20],
+    pub subject: String,
+    pub issuer: String,
+    pub not_before: FILETIME,
+    pub not_after: FILETIME,
+}
+
+/// List certificates in a store that could be presented as a client
+/// identity: a key is associated, the certificate is currently valid, and
+/// it is usable for client authentication.
+///
+/// Key *association* is read from `CERT_KEY_PROV_INFO_PROP_ID` rather
+/// than acquiring the key.  Acquiring reaches the provider, which for a
+/// smartcard or TPM can be slow and can prompt for a PIN; the property is
+/// a local lookup.  It proves a key is bound to the certificate, not that
+/// the token is present and unlocked -- that is settled at handshake time.
+///
+/// # Errors
+///
+/// Returns the Win32 error if the store cannot be opened.
+pub(crate) fn list_usable_certs(
+    location: StoreLocation,
+    store_name: &str,
+) -> Result<Vec<RawCertificateInfo>, Error> {
+    let store = open_store(location, store_name)?;
+    let mut out = Vec::new();
+
+    // CertEnumCertificatesInStore frees the context passed as
+    // pPrevCertContext and returns the next, so a full enumeration frees
+    // nothing itself; it ends by returning null.
+    let mut ctx: *const CERT_CONTEXT = std::ptr::null();
+    loop {
+        // SAFETY: `store` outlives the loop, and `ctx` is either null (to
+        // start) or the context handed back by the previous call.
+        ctx = unsafe { CertEnumCertificatesInStore(store.0, ctx).cast_const() };
+        if ctx.is_null() {
+            break;
+        }
+
+        if !has_associated_key(ctx) || !is_time_valid(ctx) || !allows_client_auth(ctx) {
+            continue;
+        }
+
+        // SAFETY: `ctx` is a live context for this iteration.
+        let (not_before, not_after) = unsafe {
+            let info = (*ctx).pCertInfo;
+            if info.is_null() {
+                continue;
+            }
+            ((*info).NotBefore, (*info).NotAfter)
+        };
+
+        let Some(sha1) = cert_sha1(ctx) else { continue };
+
+        out.push(RawCertificateInfo {
+            sha1,
+            subject: cert_name(ctx, 0),
+            issuer: cert_name(ctx, CERT_NAME_ISSUER_FLAG),
+            not_before,
+            not_after,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Whether a private key is associated with the certificate, without
+/// reaching the key's provider.
+fn has_associated_key(ctx: *const CERT_CONTEXT) -> bool {
+    let mut size = 0u32;
+    // SAFETY: a null `pvdata` asks only for the property's size, which is
+    // how presence is tested.
+    unsafe {
+        CertGetCertificateContextProperty(
+            ctx,
+            CERT_KEY_PROV_INFO_PROP_ID,
+            std::ptr::null_mut(),
+            &raw mut size,
+        ) != 0
+    }
+}
+
+/// Whether the certificate is valid at the current time.
+fn is_time_valid(ctx: *const CERT_CONTEXT) -> bool {
+    // SAFETY: a null time means "now"; `pCertInfo` belongs to `ctx`.
+    unsafe {
+        let info = (*ctx).pCertInfo;
+        !info.is_null() && CertVerifyTimeValidity(std::ptr::null(), info) == 0
+    }
+}
+
+/// Whether the certificate may be used for client authentication.
+///
+/// A certificate with no EKU at all is good for every use, which WinHTTP
+/// and SChannel both honour, so an empty usage list counts as allowed.
+fn allows_client_auth(ctx: *const CERT_CONTEXT) -> bool {
+    let mut size = 0u32;
+    // SAFETY: first call sizes the buffer.
+    let sized =
+        unsafe { CertGetEnhancedKeyUsage(ctx, 0, std::ptr::null_mut(), &raw mut size) != 0 };
+    if !sized || size == 0 {
+        return false;
+    }
+
+    let mut buf = vec![0u8; size as usize];
+    let usage = buf.as_mut_ptr().cast::<CTL_USAGE>();
+    // SAFETY: `buf` is at least `size` bytes, which is what the first call
+    // asked for.
+    if unsafe { CertGetEnhancedKeyUsage(ctx, 0, usage, &raw mut size) } == 0 {
+        return false;
+    }
+
+    // SAFETY: crypt32 filled `usage` with a CTL_USAGE and, when the count
+    // is non-zero, that many OID pointers.
+    unsafe {
+        let count = (*usage).cUsageIdentifier;
+        if count == 0 {
+            // No EKU: valid for all uses.
+            return true;
+        }
+        let oids = (*usage).rgpszUsageIdentifier;
+        (0..count as usize).any(|i| {
+            let oid = *oids.add(i);
+            !oid.is_null() && cstr_eq(oid, szOID_PKIX_KP_CLIENT_AUTH)
+        })
+    }
+}
+
+/// Compare two null-terminated ASCII C strings.
+///
+/// # Safety
+///
+/// Both pointers must be null-terminated and readable.
+unsafe fn cstr_eq(a: windows_sys::core::PCSTR, b: windows_sys::core::PCSTR) -> bool {
+    // SAFETY: delegated to this function's contract.
+    unsafe {
+        let mut i = 0usize;
+        loop {
+            let (x, y) = (*a.add(i), *b.add(i));
+            if x != y {
+                return false;
+            }
+            if x == 0 {
+                return true;
+            }
+            i = i.wrapping_add(1);
+        }
+    }
+}
+
+/// The certificate's SHA-1 thumbprint, as the store records it.
+fn cert_sha1(ctx: *const CERT_CONTEXT) -> Option<[u8; 20]> {
+    let mut sha1 = [0u8; 20];
+    let mut size = 20u32;
+    // SAFETY: the buffer is exactly the 20 bytes a SHA-1 property needs.
+    let ok = unsafe {
+        CertGetCertificateContextProperty(
+            ctx,
+            CERT_SHA1_HASH_PROP_ID,
+            sha1.as_mut_ptr().cast(),
+            &raw mut size,
+        ) != 0
+    };
+    (ok && size == 20).then_some(sha1)
+}
+
+/// A display name for the certificate; empty when it has none.
+fn cert_name(ctx: *const CERT_CONTEXT, flags: u32) -> String {
+    // SAFETY: a null buffer asks for the length, in characters, including
+    // the terminator.
+    let len = unsafe {
+        CertGetNameStringW(
+            ctx,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            flags,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if len <= 1 {
+        return String::new();
+    }
+
+    let mut buf = vec![0u16; len as usize];
+    // SAFETY: `buf` holds `len` wide characters, which is what the sizing
+    // call reported.
+    let written = unsafe {
+        CertGetNameStringW(
+            ctx,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            flags,
+            std::ptr::null(),
+            buf.as_mut_ptr(),
+            len,
+        )
+    };
+    if written == 0 {
+        return String::new();
+    }
+
+    // Drop the trailing null before converting.
+    String::from_utf16_lossy(&buf[..written.saturating_sub(1) as usize])
 }
 
 /// Increment the reference count on a certificate context.

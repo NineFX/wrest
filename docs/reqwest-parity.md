@@ -49,7 +49,7 @@ Each row is a single public API item. Status meanings:
 | `cookie` | ✓ | — | 💤 | |
 | `dns` | ✓ | — | 🔒 | WinHTTP manages DNS |
 | `multipart` | ✓ | — | 💤 | |
-| `tls` | ✓ | ✓ | ✅ | `Version` and `Identity`; `Certificate` / `TlsInfo` have no analogue (WinHTTP validates against the OS store itself) |
+| `tls` | ✓ | ✓ | ✅ | `Version` and `Identity`, plus the wrest-only `CertificateInfo` / `list_client_certificates()`; `Certificate` / `TlsInfo` have no analogue (WinHTTP validates against the OS store itself) |
 | `retry` | ✓ | ✓ | ✅ | |
 
 ## Traits & Impls

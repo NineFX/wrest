@@ -126,3 +126,31 @@ async fn without_an_identity_the_handshake_fails() {
     let err = result.expect_err("server requires a client certificate");
     eprintln!("no-identity error (informational): {err:?}");
 }
+
+/// The certificate CI installs must appear in the listing, and the
+/// listing's thumbprint must be the one the environment reports.
+#[tokio::test]
+async fn ci_certificate_appears_in_the_listing() {
+    let Some((_, thumbprint)) = mtls_env() else {
+        eprintln!("skipping: WREST_MTLS_THUMBPRINT not set");
+        return;
+    };
+
+    let certs = wrest::tls::list_client_certificates(StoreLocation::CurrentUser, "MY")
+        .expect("CurrentUser\\MY should open");
+
+    let found = certs
+        .iter()
+        .find(|c| c.thumbprint == thumbprint)
+        .unwrap_or_else(|| {
+            let seen: Vec<_> = certs.iter().map(|c| c.thumbprint_hex()).collect();
+            panic!("installed certificate is missing from the listing; saw {seen:?}")
+        });
+
+    assert!(
+        found.subject.contains("wrest-mtls-test-client"),
+        "unexpected subject: {}",
+        found.subject
+    );
+    assert!(found.not_after > std::time::SystemTime::now(), "listed an expired certificate");
+}

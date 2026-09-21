@@ -347,6 +347,107 @@ impl std::fmt::Debug for Identity {
     }
 }
 
+/// A certificate in a Windows store, as metadata only.
+///
+/// Returned by [`list_client_certificates()`]; holds no handle and
+/// borrows nothing from the store.  Requires the `client-cert` feature.
+#[cfg(feature = "client-cert")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateInfo {
+    /// SHA-1 thumbprint, the key [`Identity::from_windows_store()`] takes.
+    pub thumbprint: [u8; 20],
+    /// Display name of the subject, empty if the certificate has none.
+    pub subject: String,
+    /// Display name of the issuer, empty if the certificate has none.
+    pub issuer: String,
+    /// Start of the validity window.
+    pub not_before: std::time::SystemTime,
+    /// End of the validity window.
+    pub not_after: std::time::SystemTime,
+}
+
+#[cfg(feature = "client-cert")]
+impl CertificateInfo {
+    /// The thumbprint as lowercase hex, the form `certmgr.msc` shows.
+    #[must_use]
+    pub fn thumbprint_hex(&self) -> String {
+        crate::abi::hex_thumbprint(&self.thumbprint)
+    }
+}
+
+/// List the certificates in a Windows store that could be presented as a
+/// client identity.
+///
+/// Requires the `client-cert` feature.  `store_name` is a Windows store
+/// name such as `"MY"`, the personal store where client certificates
+/// normally live.
+///
+/// Only certificates that could actually be used are returned: one with
+/// no associated private key, outside its validity window, or without the
+/// client-authentication EKU cannot complete a handshake, and filtering
+/// them here turns a later handshake failure into an empty list.
+///
+/// Selection is left to the caller, since an iterator expresses it better
+/// than any filter this could offer:
+///
+/// ```rust,ignore
+/// let certs = wrest::tls::list_client_certificates(StoreLocation::CurrentUser, "MY")?;
+/// let chosen = certs.iter().find(|c| c.subject.contains("svc-payments"));
+/// ```
+///
+/// # Hardware-backed keys
+///
+/// A key is detected by the association the store records, not by
+/// acquiring it, so this never reaches a smartcard or TPM and never
+/// prompts for a PIN.  The trade-off is that a listed certificate is one
+/// whose key *should* be usable; whether the token is present and
+/// unlocked is settled during the handshake.
+///
+/// # Errors
+///
+/// Returns an error if the store cannot be opened.
+#[cfg(feature = "client-cert")]
+pub fn list_client_certificates(
+    location: StoreLocation,
+    store_name: &str,
+) -> Result<Vec<CertificateInfo>, crate::Error> {
+    let raw = crate::abi::list_usable_certs(location.into(), store_name)?;
+    Ok(raw
+        .into_iter()
+        .map(|c| CertificateInfo {
+            thumbprint: c.sha1,
+            subject: c.subject,
+            issuer: c.issuer,
+            not_before: filetime_to_system_time(c.not_before),
+            not_after: filetime_to_system_time(c.not_after),
+        })
+        .collect())
+}
+
+/// Convert a `FILETIME` (100ns ticks since 1601-01-01) to a `SystemTime`.
+///
+/// Saturates rather than wrapping: a certificate with a nonsensical date
+/// should not panic a listing.
+#[cfg(feature = "client-cert")]
+fn filetime_to_system_time(ft: windows_sys::Win32::Foundation::FILETIME) -> std::time::SystemTime {
+    /// Seconds between the FILETIME epoch (1601) and the Unix epoch.
+    const EPOCH_DELTA_SECS: u64 = 11_644_473_600;
+
+    let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
+    let secs = ticks / 10_000_000;
+    let nanos = u32::try_from((ticks % 10_000_000).saturating_mul(100)).unwrap_or(0);
+
+    match secs.checked_sub(EPOCH_DELTA_SECS) {
+        Some(unix_secs) => std::time::UNIX_EPOCH
+            .checked_add(std::time::Duration::new(unix_secs, nanos))
+            .unwrap_or(std::time::UNIX_EPOCH),
+        // Before 1601 + delta, i.e. before the Unix epoch.
+        None => std::time::UNIX_EPOCH
+            .checked_sub(std::time::Duration::from_secs(EPOCH_DELTA_SECS.saturating_sub(secs)))
+            .unwrap_or(std::time::UNIX_EPOCH),
+    }
+}
+
 /// Per-request TLS configuration, resolved at `Client` build time.
 ///
 /// Bundled rather than passed as loose arguments so the WinHTTP layer
@@ -427,6 +528,56 @@ mod identity_tests {
         };
         let shown = format!("{identity:?}");
         assert!(shown.contains("abab"), "thumbprint should be shown: {shown}");
+    }
+
+    #[test]
+    fn listing_a_store_succeeds_and_is_self_consistent() {
+        // CurrentUser\MY always exists; it may legitimately be empty on a
+        // machine with no personal certificates.
+        let certs = list_client_certificates(StoreLocation::CurrentUser, "MY")
+            .expect("CurrentUser\\MY should open");
+
+        for cert in &certs {
+            assert!(
+                cert.not_before <= cert.not_after,
+                "validity window is inverted for {}",
+                cert.thumbprint_hex()
+            );
+            assert_eq!(cert.thumbprint_hex().len(), 40);
+            // Every listed certificate must be resolvable by the
+            // thumbprint the listing reported.
+            Identity::from_windows_store(StoreLocation::CurrentUser, "MY", &cert.thumbprint)
+                .unwrap_or_else(|e| {
+                    panic!("listed {} but could not load it: {e:?}", cert.thumbprint_hex())
+                });
+        }
+    }
+
+    #[test]
+    fn listing_an_unknown_store_is_an_error() {
+        let err = list_client_certificates(StoreLocation::CurrentUser, "NoSuchStore\\Invalid")
+            .expect_err("an invalid store name should fail");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn filetime_converts_around_the_unix_epoch() {
+        use windows_sys::Win32::Foundation::FILETIME;
+
+        // The Unix epoch expressed as a FILETIME.
+        let ticks: u64 = 11_644_473_600 * 10_000_000;
+        let epoch = FILETIME {
+            dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
+            dwHighDateTime: (ticks >> 32) as u32,
+        };
+        assert_eq!(filetime_to_system_time(epoch), std::time::UNIX_EPOCH);
+
+        // Zero is 1601, well before the Unix epoch, and must not panic.
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        assert!(filetime_to_system_time(zero) < std::time::UNIX_EPOCH);
     }
 
     #[test]
