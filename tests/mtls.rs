@@ -12,11 +12,25 @@ use std::time::Duration;
 use wrest::{Client, StatusCode, tls::Identity};
 
 /// The CI-provided environment, or `None` when these tests should skip.
+///
+/// Also asserts the server is reachable. Without that check a dead
+/// server is indistinguishable from a rejected handshake, which would
+/// let [`without_an_identity_the_handshake_fails`] pass for entirely the
+/// wrong reason -- as it did on the first CI run, when the server had
+/// been reaped before the tests started.
 fn mtls_env() -> Option<(String, [u8; 20])> {
     let url = std::env::var("WREST_MTLS_URL").ok()?;
     let thumbprint = std::env::var("WREST_MTLS_THUMBPRINT").ok()?;
     let thumbprint = parse_thumbprint(&thumbprint)
         .unwrap_or_else(|| panic!("WREST_MTLS_THUMBPRINT is not 40 hex chars: {thumbprint:?}"));
+
+    let authority = url
+        .strip_prefix("https://")
+        .unwrap_or_else(|| panic!("WREST_MTLS_URL should be https: {url}"));
+    if let Err(e) = std::net::TcpStream::connect(authority) {
+        panic!("mTLS server at {authority} is not reachable ({e}); these tests cannot be trusted");
+    }
+
     Some((url, thumbprint))
 }
 
@@ -101,6 +115,8 @@ async fn without_an_identity_the_handshake_fails() {
 
     let result = client.get(format!("{url}/client-cert")).send().await;
 
+    // `mtls_env` has already proven the port is open, so this can only
+    // be the server refusing a handshake with no client certificate.
     let err = result.expect_err("server requires a client certificate");
     eprintln!("no-identity error (informational): {err:?}");
 }

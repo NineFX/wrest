@@ -39,38 +39,29 @@ runs:
         "WREST_MTLS_THUMBPRINT=$thumbprint" >> $env:GITHUB_ENV
 
     - name: Start mTLS server
-      shell: pwsh
+      # Mirrors start-httpbin: build, then launch from bash with `&`.
+      # `Start-Process -NoNewWindow` does NOT survive the step boundary --
+      # the server was reaped before the test step ran, and the tests saw
+      # ERROR_WINHTTP_CANNOT_CONNECT (12029) rather than a handshake.
+      shell: bash
       run: |
-        $ErrorActionPreference = 'Stop'
+        set -euo pipefail
+        (cd .github/ci-tools/mtls-server && go build -o mtls-server.exe .)
+        ./.github/ci-tools/mtls-server/mtls-server.exe -addr 127.0.0.1:8443 \
+          > mtls-server.log 2>&1 &
 
-        Start-Process -FilePath 'go' `
-          -ArgumentList 'run', '.', '-addr', '127.0.0.1:8443' `
-          -WorkingDirectory '.github/ci-tools/mtls-server' `
-          -RedirectStandardOutput 'mtls-server.log' `
-          -RedirectStandardError 'mtls-server.err.log' `
-          -NoNewWindow
+        # Wait for the server's own readiness line rather than probing the
+        # port: a bare TCP probe logs a spurious handshake error.
+        ok=0
+        for _ in $(seq 1 60); do
+          grep -q "mtls-server ready" mtls-server.log 2>/dev/null && { ok=1; break; }
+          sleep 0.5
+        done
 
-        # `go run` compiles first, so allow well beyond the server's own
-        # startup time before giving up.
-        $ready = $false
-        foreach ($_ in 1..60) {
-          try {
-            $connection = New-Object System.Net.Sockets.TcpClient
-            $connection.Connect('127.0.0.1', 8443)
-            $connection.Close()
-            $ready = $true
-            break
-          } catch {
-            Start-Sleep -Milliseconds 500
-          }
-        }
-
-        if (-not $ready) {
-          Write-Host '::error::mtls-server failed to start within 30s'
-          Get-Content mtls-server.log -ErrorAction SilentlyContinue
-          Get-Content mtls-server.err.log -ErrorAction SilentlyContinue
+        if [[ $ok -ne 1 ]]; then
+          echo "::error::mtls-server failed to start within 30s"
+          cat mtls-server.log || true
           exit 1
-        }
+        fi
 
-        Write-Host 'mtls-server is accepting connections'
-        "WREST_MTLS_URL=https://127.0.0.1:8443" >> $env:GITHUB_ENV
+        echo "WREST_MTLS_URL=https://127.0.0.1:8443" >> "$GITHUB_ENV"
