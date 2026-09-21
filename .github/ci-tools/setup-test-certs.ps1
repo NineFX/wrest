@@ -75,6 +75,34 @@ function Publish-Variable {
     }
 }
 
+function New-TestCertificate {
+    <#
+    .SYNOPSIS
+        Create a client certificate unique to this run.
+    .PARAMETER Role
+        Names the certificate's purpose; becomes part of the subject, so
+        two roles never collide and neither collides with another run.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $Role
+    )
+
+    $cert = New-SelfSignedCertificate `
+        -Subject "${SubjectPrefix}$Role-$RunId" `
+        -CertStoreLocation 'Cert:\CurrentUser\My' `
+        -KeyExportPolicy NonExportable `
+        -KeyUsage DigitalSignature, KeyEncipherment `
+        -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2') `
+        -NotAfter (Get-Date).AddDays(1)
+
+    if (-not $cert.Thumbprint) {
+        throw "$Role certificate created without a thumbprint"
+    }
+
+    $cert
+}
+
 function Remove-TestCertificates {
     param(
         # Remove only certificates that have expired.  Creating a new
@@ -116,34 +144,12 @@ if ($ClientCertificate) {
     # Only expired leftovers: a concurrent run's certificates must survive.
     Remove-TestCertificates -ExpiredOnly
 
-    $cert = New-SelfSignedCertificate `
-        -Subject "${SubjectPrefix}client-$RunId" `
-        -CertStoreLocation 'Cert:\CurrentUser\My' `
-        -KeyExportPolicy NonExportable `
-        -KeyUsage DigitalSignature, KeyEncipherment `
-        -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2') `
-        -NotAfter (Get-Date).AddDays(1)
-
-    if (-not $cert.Thumbprint) {
-        throw 'certificate created without a thumbprint'
-    }
-
+    $cert = New-TestCertificate -Role 'client'
     Publish-Variable -Name 'WREST_MTLS_THUMBPRINT' -Value $cert.Thumbprint
 }
 
 if ($DisposableCertificate) {
-    $cert = New-SelfSignedCertificate `
-        -Subject "${SubjectPrefix}disposable-$RunId" `
-        -CertStoreLocation 'Cert:\CurrentUser\My' `
-        -KeyExportPolicy NonExportable `
-        -KeyUsage DigitalSignature, KeyEncipherment `
-        -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2') `
-        -NotAfter (Get-Date).AddDays(1)
-
-    if (-not $cert.Thumbprint) {
-        throw 'disposable certificate created without a thumbprint'
-    }
-
+    $cert = New-TestCertificate -Role 'disposable'
     Publish-Variable -Name 'WREST_MTLS_DISPOSABLE_THUMBPRINT' -Value $cert.Thumbprint
 }
 
