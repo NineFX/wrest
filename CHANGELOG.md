@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Client certificates (`client-cert` feature): `tls::Identity` plus `ClientBuilder::identity()`, backed by `WINHTTP_OPTION_CLIENT_CERT_CONTEXT`. The certificate is referenced in the Windows store rather than imported from exported key material, so smartcard, TPM and PIV-backed keys work - which reqwest's `Identity` cannot express, since all of its constructors take a PKCS#12 archive or a PEM key. Constructors are `Identity::from_system_store()`, `from_current_user()` (a `CurrentUser\MY` shorthand) and the `unsafe from_cert_context()` escape hatch for a `CERT_CONTEXT` obtained elsewhere, e.g. from the `schannel` crate. reqwest's own PKCS#12/PEM constructors are not implemented. On the reqwest passthrough `tls::Identity` remains reqwest's type with reqwest's constructors, and the feature is inert.
 - TLS version pinning: `ClientBuilder::tls_version_min()` / `tls_version_max()` (with the reqwest-compatible `min_tls_version()` / `max_tls_version()` aliases) and the `wrest::tls::Version` type, matching the reqwest 0.13 API. The range is applied to the WinHTTP session via `WINHTTP_OPTION_SECURE_PROTOCOLS`. Because that option is an explicit allowlist rather than a floor, a one-sided range implies the other bound: `tls_version_min()` alone permits everything up through TLS 1.3, and `tls_version_max()` alone keeps an implied minimum of TLS 1.2 so that capping the maximum can never silently re-enable TLS 1.0/1.1 (the implied minimum drops to TLS 1.0 only when the requested maximum is itself below TLS 1.2). An inverted range is an `Error::is_builder()` error from `build()`. The TLS 1.3 flag requires Windows 11 / Server 2022; on older Windows a range that also permits lower versions falls back to those, while a TLS-1.3-only range fails in `build()` rather than quietly negotiating something weaker.
 
+### Security
+- Dependencies: bumped `h2` 0.4.15 -> 0.4.19 and `rustls` 0.23.41 -> 0.23.45 (pulling `rustls-webpki` 0.103.15, `aws-lc-rs` 1.18.1, `aws-lc-sys` 0.45.0) to clear two `cargo audit` advisories:
+  - [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258) - `h2` unbounded empty DATA frames.
+  - [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285) - `rustls` incorrectly accepted TLS 1.3 handshake messages across encryption level boundaries.
+
+  Both crates are reached only through the `reqwest` passthrough backend used off Windows; the native WinHTTP code path does not use either, so this is a lockfile-only change with no effect on the native backend.
+
 ## 0.5.7
 
 ### Fixed
