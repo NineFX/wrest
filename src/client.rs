@@ -1550,6 +1550,96 @@ mod tests {
         assert!(err.is_builder(), "inverted TLS range should be a builder error");
     }
 
+    /// The process's open handle count.
+    ///
+    /// WinHTTP session, connection and request handles are kernel
+    /// handles, so one that is never closed shows up here.
+    fn process_handle_count() -> u32 {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+        let mut count = 0u32;
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs
+        // no closing, and `count` is a valid out-parameter.
+        let ok = unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut count) != 0 };
+        assert!(ok, "GetProcessHandleCount failed");
+        count
+    }
+
+    /// Building and dropping clients must not accumulate handles.
+    ///
+    /// Each `Client` opens a WinHTTP session; leaking one leaks a handle
+    /// per client. The first few iterations are discarded because lazy
+    /// initialisation inside WinHTTP legitimately opens handles that then
+    /// stay open.
+    #[test]
+    fn building_clients_does_not_leak_handles() {
+        const WARMUP: usize = 20;
+        const ITERATIONS: usize = 200;
+
+        for _ in 0..WARMUP {
+            drop(Client::builder().build().expect("client should build"));
+        }
+
+        let before = process_handle_count();
+        for _ in 0..ITERATIONS {
+            drop(Client::builder().build().expect("client should build"));
+        }
+        let after = process_handle_count();
+
+        // A per-client leak would show as roughly ITERATIONS; the
+        // allowance absorbs unrelated activity elsewhere in the process.
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 32,
+            "handle count grew by {growth} over {ITERATIONS} clients ({before} -> {after})"
+        );
+    }
+
+    /// Sending requests on one client must not accumulate handles.
+    ///
+    /// Covers the connection and request handles, which are opened and
+    /// closed per request, unlike the session.
+    #[tokio::test]
+    async fn sending_requests_does_not_leak_handles() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const WARMUP: usize = 10;
+        const ITERATIONS: usize = 150;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/handles"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let client = Client::builder().build().expect("client should build");
+        let url = format!("{}/handles", server.uri());
+
+        for _ in 0..WARMUP {
+            let resp = client.get(&url).send().await.expect("warmup request");
+            let _ = resp.text().await.expect("warmup body");
+        }
+
+        let before = process_handle_count();
+        for _ in 0..ITERATIONS {
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .expect("request should succeed");
+            let _ = resp.text().await.expect("body should read");
+        }
+        let after = process_handle_count();
+
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 32,
+            "handle count grew by {growth} over {ITERATIONS} requests ({before} -> {after})"
+        );
+    }
+
     #[tokio::test]
     async fn https_only_rejects_http() {
         let client = Client::builder().https_only(true).build().unwrap();
