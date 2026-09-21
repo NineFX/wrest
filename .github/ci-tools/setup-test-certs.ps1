@@ -33,6 +33,11 @@ param(
     # Create the client certificate and report its thumbprint.
     [switch] $ClientCertificate,
 
+    # Create a second, disposable certificate for the test that deletes one
+    # out from under a live Identity.  Separate from the main certificate so
+    # that deletion cannot disturb tests running in parallel.
+    [switch] $DisposableCertificate,
+
     # Path to the server certificate (DER) to add to the trust store.
     [string] $TrustServerCertificate,
 
@@ -51,6 +56,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ClientSubject = 'CN=wrest-mtls-test-client'
+$DisposableSubject = 'CN=wrest-mtls-disposable-client'
 $ServerSubject = 'CN=wrest-mtls-test-server'
 
 # Append to GITHUB_ENV when running under Actions, and set the variable in
@@ -78,8 +84,11 @@ function Remove-TestCertificates {
 
         # A store we lack rights to is not an error: CI runs elevated, a
         # developer machine may not.
-        $certs = Get-ChildItem $store -ErrorAction SilentlyContinue |
-            Where-Object { $_.Subject -eq $ClientSubject -or $_.Subject -eq $ServerSubject }
+        $certs = Get-ChildItem $store -ErrorAction SilentlyContinue | Where-Object {
+            $_.Subject -eq $ClientSubject -or
+            $_.Subject -eq $DisposableSubject -or
+            $_.Subject -eq $ServerSubject
+        }
 
         foreach ($cert in $certs) {
             Write-Host "removing $($cert.Thumbprint) from $store"
@@ -112,6 +121,24 @@ if ($ClientCertificate) {
     }
 
     Publish-Variable -Name 'WREST_MTLS_THUMBPRINT' -Value $cert.Thumbprint
+}
+
+if ($DisposableCertificate) {
+    # Deliberately does not purge first: the client certificate created
+    # above must survive.
+    $cert = New-SelfSignedCertificate `
+        -Subject $DisposableSubject `
+        -CertStoreLocation 'Cert:\CurrentUser\My' `
+        -KeyExportPolicy NonExportable `
+        -KeyUsage DigitalSignature, KeyEncipherment `
+        -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2') `
+        -NotAfter (Get-Date).AddDays(1)
+
+    if (-not $cert.Thumbprint) {
+        throw 'disposable certificate created without a thumbprint'
+    }
+
+    Publish-Variable -Name 'WREST_MTLS_DISPOSABLE_THUMBPRINT' -Value $cert.Thumbprint
 }
 
 if ($TrustServerCertificate) {

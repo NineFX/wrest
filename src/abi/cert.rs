@@ -66,6 +66,14 @@ impl Drop for CertStore {
 /// Returns the Win32 error if the store cannot be opened, or a
 /// not-found error if no certificate in it has that thumbprint.
 fn open_store(location: StoreLocation, store_name: &str) -> Result<CertStore, Error> {
+    open_store_with(location, store_name, CERT_STORE_READONLY_FLAG)
+}
+
+fn open_store_with(
+    location: StoreLocation,
+    store_name: &str,
+    access: u32,
+) -> Result<CertStore, Error> {
     let name_wide = to_wide(store_name);
 
     // SAFETY: `CERT_STORE_PROV_SYSTEM_W` selects the system-store
@@ -76,7 +84,7 @@ fn open_store(location: StoreLocation, store_name: &str) -> Result<CertStore, Er
             CERT_STORE_PROV_SYSTEM_W,
             0,
             0,
-            location.flag() | CERT_STORE_READONLY_FLAG,
+            location.flag() | access,
             name_wide.as_ptr().cast(),
         )
     };
@@ -92,7 +100,18 @@ pub(crate) fn find_cert_by_sha1(
     sha1: &[u8; 20],
 ) -> Result<*const CERT_CONTEXT, Error> {
     let store = open_store(location, store_name)?;
+    find_in_open_store(&store, sha1).ok_or_else(|| {
+        // CertFindCertificateInStore sets CRYPT_E_NOT_FOUND, which maps to
+        // a confusing message; say what actually happened instead.
+        Error::builder(format!(
+            "no certificate with SHA-1 thumbprint {} in {location:?}\\{store_name}",
+            hex_thumbprint(sha1),
+        ))
+    })
+}
 
+/// Find a certificate by thumbprint in an already-open store.
+fn find_in_open_store(store: &CertStore, sha1: &[u8; 20]) -> Option<*const CERT_CONTEXT> {
     let mut hash = *sha1;
     let blob = CRYPT_INTEGER_BLOB {
         cbData: 20,
@@ -113,18 +132,9 @@ pub(crate) fn find_cert_by_sha1(
         )
     };
 
-    if found.is_null() {
-        // CertFindCertificateInStore sets CRYPT_E_NOT_FOUND, which maps to
-        // a confusing message; say what actually happened instead.
-        return Err(Error::builder(format!(
-            "no certificate with SHA-1 thumbprint {} in {location:?}\\{store_name}",
-            hex_thumbprint(sha1),
-        )));
-    }
-
-    // The found context is owned by us; the store closes on drop below
-    // without the force flag, which leaves the context valid.
-    Ok(found.cast_const())
+    // The found context is owned by the caller; the store closes without
+    // the force flag, which leaves the context valid.
+    (!found.is_null()).then(|| found.cast_const())
 }
 
 /// Metadata for one certificate, read without touching its private key.
@@ -384,6 +394,39 @@ pub(crate) fn create_cert_context(der: &[u8]) -> Result<*const CERT_CONTEXT, Err
         return Err(last_win32_error());
     }
     Ok(ctx.cast_const())
+}
+
+/// Delete a certificate from a store by SHA-1 thumbprint.
+///
+/// Only used by tests, to remove a certificate out from under a live
+/// [`crate::tls::Identity`].
+///
+/// # Errors
+///
+/// Returns the Win32 error if the store cannot be opened for writing, or
+/// if no certificate has that thumbprint.
+#[cfg(test)]
+pub(crate) fn delete_cert_by_sha1(
+    location: StoreLocation,
+    store_name: &str,
+    sha1: &[u8; 20],
+) -> Result<(), Error> {
+    use windows_sys::Win32::Security::Cryptography::{
+        CERT_STORE_MAXIMUM_ALLOWED_FLAG, CertDeleteCertificateFromStore,
+    };
+
+    let store = open_store_with(location, store_name, CERT_STORE_MAXIMUM_ALLOWED_FLAG)?;
+    let found = find_in_open_store(&store, sha1).ok_or_else(|| {
+        Error::builder(format!(
+            "no certificate with SHA-1 thumbprint {} to delete",
+            hex_thumbprint(sha1)
+        ))
+    })?;
+
+    // SAFETY: `found` is a live context from this store.  The call frees
+    // it whether or not it succeeds, so it must not be freed again.
+    let ok = unsafe { CertDeleteCertificateFromStore(found) != 0 };
+    if ok { Ok(()) } else { Err(last_win32_error()) }
 }
 
 /// Lowercase hex, for error messages and `Debug`.

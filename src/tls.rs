@@ -606,6 +606,78 @@ mod identity_tests {
         assert!(detail.contains("no certificate"), "got {detail}");
     }
 
+    /// Parse 40 hex characters into a thumbprint.
+    fn parse_thumbprint(hex: &str) -> Option<[u8; 20]> {
+        let hex = hex.trim();
+        if hex.len() != 40 {
+            return None;
+        }
+        let (pairs, _) = hex.as_bytes().as_chunks::<2>();
+        let mut out = [0u8; 20];
+        for (slot, pair) in out.iter_mut().zip(pairs) {
+            *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+        }
+        Some(out)
+    }
+
+    /// What happens when the certificate an `Identity` names is deleted
+    /// from the store before the request is sent.
+    ///
+    /// `Identity` holds a duplicated `CERT_CONTEXT`, so the context itself
+    /// survives; the private key is resolved through its provider during
+    /// the handshake, and whether that still works after deletion is the
+    /// question. CI provides a disposable certificate so this cannot
+    /// disturb the tests using the main one.
+    #[tokio::test]
+    async fn identity_after_certificate_is_deleted() {
+        let (Ok(url), Ok(raw)) =
+            (std::env::var("WREST_MTLS_URL"), std::env::var("WREST_MTLS_DISPOSABLE_THUMBPRINT"))
+        else {
+            eprintln!("skipping: WREST_MTLS_URL / WREST_MTLS_DISPOSABLE_THUMBPRINT not set");
+            return;
+        };
+        let thumbprint =
+            parse_thumbprint(&raw).unwrap_or_else(|| panic!("bad thumbprint: {raw:?}"));
+
+        let identity = Identity::from_windows_store(StoreLocation::CurrentUser, "MY", &thumbprint)
+            .expect("CI installs the disposable certificate");
+
+        crate::abi::delete_cert_by_sha1(crate::abi::StoreLocation::CurrentUser, "MY", &thumbprint)
+            .expect("the disposable certificate should be deletable");
+
+        // It is really gone from the store.
+        let listed =
+            list_client_certificates(StoreLocation::CurrentUser, "MY").expect("store should open");
+        assert!(
+            listed.iter().all(|c| c.thumbprint != thumbprint),
+            "deleted certificate is still listed"
+        );
+
+        let client = crate::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .tls_danger_accept_invalid_certs(true)
+            .identity(identity)
+            .build()
+            .expect("client should build from an Identity whose certificate is gone");
+
+        // The observed outcome is recorded rather than assumed: the
+        // context survives deletion, but the key is resolved per
+        // handshake. Either way the client must not hang or panic.
+        match client.get(format!("{url}/client-cert")).send().await {
+            Ok(resp) => {
+                eprintln!(
+                    "OBSERVED: handshake still succeeded after deletion, status {}",
+                    resp.status()
+                );
+                assert_eq!(resp.status(), crate::StatusCode::OK);
+            }
+            Err(e) => {
+                eprintln!("OBSERVED: handshake failed after deletion: {e:?}");
+                assert!(e.is_connect(), "should be a connect-class failure, got {e:?}");
+            }
+        }
+    }
+
     #[test]
     fn winhttp_accepts_the_client_cert_option() {
         // The buffer for WINHTTP_OPTION_CLIENT_CERT_CONTEXT is the
