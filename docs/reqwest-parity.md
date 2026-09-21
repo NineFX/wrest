@@ -463,7 +463,7 @@ are feasible future work unless noted otherwise.
 | Type | Status | Notes |
 |------|--------|-------|
 | `Certificate` — `from_pem()`, `from_der()`, `from_pem_bundle()` | 🔒 | OS cert store |
-| `Identity` — `from_pkcs12_der()`, `from_pkcs8_pem()`, `from_pem()` | 💤 | would need `PFXImportCertStore`; wrest instead offers `from_system_store()` / `from_current_user()` / `from_cert_context()`, which reference a store-resident certificate and so support non-exportable (smartcard / TPM / PIV) keys |
+| `Identity` — `from_pkcs12_der()`, `from_pkcs8_pem()`, `from_pem()` | 💤 | would need `PFXImportCertStore`; wrest instead offers `from_windows_store()` / `from_current_user()` / `from_cert_context()`, which reference a store-resident certificate and so support non-exportable (smartcard / TPM / PIV) keys |
 | `Version` — `TLS_1_0`, `TLS_1_1`, `TLS_1_2`, `TLS_1_3` | 🔒 | SChannel negotiates |
 | `TlsInfo` — `peer_certificate()` | 💤 | |
 | `CertificateRevocationList` — `from_pem()`, `from_der()` | 🔒 | rustls only concept |

@@ -264,17 +264,23 @@ unsafe impl Sync for Identity {}
 
 #[cfg(feature = "client-cert")]
 impl Identity {
-    /// Look up a certificate by SHA-1 thumbprint in a system store.
+    /// Look up a certificate by SHA-1 thumbprint in a Windows system store.
     ///
     /// `store_name` is a Windows store name such as `"MY"` (the personal
     /// store, where client certificates normally live) or `"ROOT"`.
-    /// `certmgr.msc` displays the thumbprint as hex.
+    ///
+    /// The SHA-1 thumbprint is how Windows itself keys the store -- it is
+    /// what `certmgr.msc`, `certutil` and PowerShell's `.Thumbprint` all
+    /// show, and `CERT_FIND_SHA1_HASH` is the only hash the store indexes.
+    /// It identifies a certificate rather than authenticating one, so it
+    /// relies on second-preimage resistance rather than collision
+    /// resistance.
     ///
     /// # Errors
     ///
     /// Returns an error if the store cannot be opened, or if it holds no
     /// certificate with that thumbprint.
-    pub fn from_system_store(
+    pub fn from_windows_store(
         location: StoreLocation,
         store_name: &str,
         sha1_thumbprint: &[u8; 20],
@@ -289,13 +295,13 @@ impl Identity {
     /// Look up a certificate by SHA-1 thumbprint in `CurrentUser\MY`.
     ///
     /// Shorthand for the common case; see
-    /// [`from_system_store()`](Self::from_system_store).
+    /// [`from_windows_store()`](Self::from_windows_store).
     ///
     /// # Errors
     ///
-    /// As [`from_system_store()`](Self::from_system_store).
+    /// As [`from_windows_store()`](Self::from_windows_store).
     pub fn from_current_user(sha1_thumbprint: &[u8; 20]) -> Result<Self, crate::Error> {
-        Self::from_system_store(StoreLocation::CurrentUser, "MY", sha1_thumbprint)
+        Self::from_windows_store(StoreLocation::CurrentUser, "MY", sha1_thumbprint)
     }
 
     /// Adopt a `CERT_CONTEXT` obtained elsewhere -- for example from the
