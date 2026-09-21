@@ -1,3 +1,12 @@
 target/
 .vscode/
 
+# Scratch for local test runs (see .github/ci-tools/run-local-tests.ps1)
+.local/
+
+# Artifacts a hand-run of the CI commands leaves behind
+/mtls-server-cert.der
+/mtls-server.log
+/mtls-server.err.log
+.github/ci-tools/mtls-server/mtls-server
+.github/ci-tools/mtls-server/mtls-server.exe

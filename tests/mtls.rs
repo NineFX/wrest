@@ -6,9 +6,8 @@
 //! certificate with a non-exportable key); without both, these skip.
 //!
 //! To reproduce locally on Windows, run
-//! `.github/ci-tools/setup-test-certs.ps1 -ClientCertificate`, start
-//! `.github/ci-tools/mtls-server`, and export the two variables.
-//! `-Cleanup` removes the certificates again.
+//! `.github/ci-tools/run-local-tests.ps1`, which starts the server, creates
+//! the certificates and runs the suite; `-Cleanup` undoes it.
 
 #![cfg(all(native_winhttp, feature = "client-cert"))]
 #![expect(clippy::tests_outside_test_module)]
