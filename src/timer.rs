@@ -307,6 +307,52 @@ mod tests {
     use std::task::{Context, Poll, Waker};
     use std::time::Instant;
 
+    /// The process's open handle count.
+    fn process_handle_count() -> u32 {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+        let mut count = 0u32;
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no
+        // close, and `count` is a valid out-parameter.
+        let ok = unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut count) != 0 };
+        assert!(ok, "GetProcessHandleCount failed");
+        count
+    }
+
+    /// Creating and dropping timers must not accumulate handles.
+    ///
+    /// Each `Delay` owns a Win32 threadpool timer.  Both the dropped
+    /// -before-firing and the fired-then-dropped paths are covered, since
+    /// they tear down differently.
+    #[test]
+    fn delays_do_not_leak_handles() {
+        const WARMUP: usize = 20;
+        const ITERATIONS: usize = 300;
+
+        for _ in 0..WARMUP {
+            drop(Delay::new(Duration::from_secs(60)));
+        }
+
+        let before = process_handle_count();
+
+        // Dropped long before firing.
+        for _ in 0..ITERATIONS {
+            drop(Delay::new(Duration::from_secs(60)));
+        }
+
+        // Fired, then dropped.
+        for _ in 0..(ITERATIONS / 10) {
+            block_on(Delay::new(Duration::from_millis(1)));
+        }
+
+        let after = process_handle_count();
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 32,
+            "handle count grew by {growth} over {ITERATIONS} timers ({before} -> {after})"
+        );
+    }
+
     /// What state a `Delay` is in when its `Drop` runs.  Each variant
     /// exercises a different drain code path:
     /// * `BeforeFire` -- never polled; timer may still be armed.

@@ -1693,6 +1693,101 @@ mod tests {
         );
     }
 
+    /// Failed requests must release their handles too.
+    ///
+    /// Cleanup on the way out of a failure is easier to forget than on
+    /// the success path, and a connect that never completes still opened
+    /// connection and request handles first.
+    #[tokio::test]
+    async fn failed_requests_do_not_leak_handles() {
+        const WARMUP: usize = 5;
+        const ITERATIONS: usize = 100;
+
+        // Bind and drop a listener to obtain a port nothing is serving.
+        let closed_port = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("should bind a scratch port");
+            let port = listener
+                .local_addr()
+                .expect("should have an address")
+                .port();
+            drop(listener);
+            port
+        };
+        let url = format!("http://127.0.0.1:{closed_port}/nothing");
+
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .build()
+            .expect("client should build");
+
+        for _ in 0..WARMUP {
+            let _ = client.get(&url).send().await;
+        }
+
+        let before = process_handle_count();
+        for _ in 0..ITERATIONS {
+            let result = client.get(&url).send().await;
+            assert!(result.is_err(), "nothing is listening on {closed_port}");
+        }
+        let after = process_handle_count();
+
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 32,
+            "handle count grew by {growth} over {ITERATIONS} failed requests \
+             ({before} -> {after})"
+        );
+    }
+
+    /// Requests abandoned at the total timeout must release their handles.
+    ///
+    /// The timeout races the send future, so the request is dropped while
+    /// WinHTTP still has work in flight -- a different teardown path from
+    /// either success or a connect failure.
+    #[tokio::test]
+    async fn timed_out_requests_do_not_leak_handles() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const WARMUP: usize = 3;
+        const ITERATIONS: usize = 40;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/slow"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(30)))
+            .mount(&server)
+            .await;
+
+        let client = Client::builder()
+            .timeout(Duration::from_millis(150))
+            .build()
+            .expect("client should build");
+        let url = format!("{}/slow", server.uri());
+
+        for _ in 0..WARMUP {
+            let _ = client.get(&url).send().await;
+        }
+
+        let before = process_handle_count();
+        for _ in 0..ITERATIONS {
+            let err = client
+                .get(&url)
+                .send()
+                .await
+                .expect_err("the server never answers in time");
+            assert!(err.is_timeout(), "expected a timeout, got {err:?}");
+        }
+        let after = process_handle_count();
+
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 32,
+            "handle count grew by {growth} over {ITERATIONS} timeouts ({before} -> {after})"
+        );
+    }
+
     #[tokio::test]
     async fn https_only_rejects_http() {
         let client = Client::builder().https_only(true).build().unwrap();
