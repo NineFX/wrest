@@ -2324,3 +2324,39 @@ async fn large_body_over_4gib() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "ok");
 }
+
+// -----------------------------------------------------------------------
+// TLS version pinning
+// -----------------------------------------------------------------------
+
+/// `tls_version_min()` / `tls_version_max()` (and their deprecated
+/// aliases) exist with reqwest's signatures on both backends, and pinning
+/// a range leaves plain-HTTP requests working.
+#[tokio::test]
+#[cfg(any(feature = "default-tls", feature = "native-tls"))]
+async fn tls_version_range_accepted() {
+    use wrest::tls::Version as TlsVersion;
+
+    let server = mock_get("/tls-pin", 200, "ok").await;
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .tls_version_min(TlsVersion::TLS_1_2)
+        .tls_version_max(TlsVersion::TLS_1_3)
+        .build()
+        .expect("TLS 1.2..=1.3 should build");
+
+    let resp = client
+        .get(format!("{}/tls-pin", server.uri()))
+        .send()
+        .await
+        .expect("plain HTTP request should be unaffected by TLS pinning");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Deprecated aliases keep the same signatures.
+    let _ = Client::builder()
+        .min_tls_version(TlsVersion::TLS_1_2)
+        .max_tls_version(TlsVersion::TLS_1_3)
+        .build()
+        .expect("aliased TLS 1.2..=1.3 should build");
+}

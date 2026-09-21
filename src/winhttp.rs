@@ -760,6 +760,35 @@ pub(crate) struct SessionConfig {
     pub proxy: ProxyAction,
     pub redirect_policy: Option<Policy>,
     pub http1_only: bool,
+    /// `WINHTTP_OPTION_SECURE_PROTOCOLS` allowlist, or `None` to leave
+    /// the session at the system default.
+    pub secure_protocols: Option<u32>,
+}
+
+/// Apply a `WINHTTP_OPTION_SECURE_PROTOCOLS` allowlist to a session.
+///
+/// The TLS 1.3 flag is only recognised on Windows 11 / Server 2022 and
+/// later; older WinHTTP rejects the whole call.  Retry without that bit
+/// when the range permits lower versions.  A 1.3-only range has no safe
+/// fallback, so the error propagates rather than silently widening what
+/// the caller pinned.
+fn set_secure_protocols(handle: abi::RawWinHttpHandle, mask: u32) -> Result<(), Error> {
+    let Err(err) = abi::winhttp_set_option_u32(handle, WINHTTP_OPTION_SECURE_PROTOCOLS, mask)
+    else {
+        return Ok(());
+    };
+
+    let without_tls13 = mask & !WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+    if without_tls13 == mask || without_tls13 == 0 {
+        return Err(err);
+    }
+
+    warn!(
+        mask,
+        "WINHTTP_OPTION_SECURE_PROTOCOLS rejected; retrying without TLS 1.3 \
+         (requires Windows 11 / Server 2022)"
+    );
+    abi::winhttp_set_option_u32(handle, WINHTTP_OPTION_SECURE_PROTOCOLS, without_tls13)
 }
 
 /// An open WinHTTP session with the callback installed.
@@ -840,6 +869,13 @@ impl WinHttpSession {
         // block inside a callback waiting for another callback to complete,
         // deadlocking the async model.  Must propagate.
         abi::winhttp_set_option_u32(session.0, WINHTTP_OPTION_ASSURED_NON_BLOCKING_CALLBACKS, 1)?;
+
+        // Pin the TLS protocol range (only if explicitly configured).
+        // The caller asked for this -- a silent failure would leave the
+        // session negotiating versions they excluded.
+        if let Some(mask) = config.secure_protocols {
+            set_secure_protocols(session.0, mask)?;
+        }
 
         // Set max connections per host (only if explicitly configured).
         // The caller asked for this -- silent failure would be misleading.
@@ -1589,6 +1625,7 @@ mod tests {
             proxy: ProxyAction::Automatic,
             redirect_policy: None,
             http1_only: false,
+            secure_protocols: None,
         };
 
         let session = WinHttpSession::open(&config).expect("session should open");
@@ -1703,6 +1740,7 @@ mod tests {
                 proxy: case.proxy,
                 redirect_policy: case.redirect_policy,
                 http1_only: false,
+                secure_protocols: None,
             };
 
             let session = WinHttpSession::open(&config)
@@ -1752,6 +1790,7 @@ mod tests {
             proxy: ProxyAction::Named(server.uri(), None),
             redirect_policy: None,
             http1_only: false,
+            secure_protocols: None,
         };
 
         let session = WinHttpSession::open(&config).expect("session should open");
@@ -1968,6 +2007,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn set_secure_protocols_paths() {
+        let config = SessionConfig {
+            user_agent: String::new(),
+            connect_timeout_ms: 10_000,
+            send_timeout_ms: 0,
+            read_timeout_ms: 0,
+            verbose: false,
+            max_connections_per_host: None,
+            proxy: ProxyAction::Automatic,
+            redirect_policy: None,
+            http1_only: false,
+            secure_protocols: None,
+        };
+        let session = WinHttpSession::open(&config).unwrap();
+        let handle = session.handle.0;
+
+        // TLS 1.2 is accepted by every supported Windows version.
+        set_secure_protocols(handle, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2)
+            .expect("TLS 1.2 mask should be accepted");
+
+        // A mask WinHTTP rejects: the TLS 1.3 bit is dropped on retry, and
+        // the retry fails too, so the error surfaces rather than a silently
+        // narrowed range being applied.
+        let bogus = 0x1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+        assert!(
+            set_secure_protocols(handle, bogus).is_err(),
+            "an unusable protocol mask should propagate the WinHTTP error"
+        );
     }
 
     #[test]
