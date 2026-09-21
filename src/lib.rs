@@ -71,6 +71,9 @@ pub use proxy::{NoProxy, Proxy};
 pub use request::{Request, RequestBuilder};
 #[cfg(native_winhttp)]
 pub use response::Response;
+/// Client certificate for mutual TLS. Requires the `client-cert` feature.
+#[cfg(all(native_winhttp, feature = "client-cert"))]
+pub use tls::Identity;
 #[cfg(native_winhttp)]
 pub use url::{IntoUrl, ParseError, Url};
 
@@ -116,6 +119,15 @@ pub mod proxy {
     pub use reqwest::{NoProxy, Proxy};
 }
 
+/// Client certificate for mutual TLS.
+///
+/// On the passthrough this is reqwest's own type, so it is gated on
+/// reqwest's TLS features rather than on wrest's `client-cert`.
+#[cfg(all(
+    not(native_winhttp),
+    any(feature = "default-tls", feature = "native-tls")
+))]
+pub use reqwest::Identity;
 /// TLS configuration types.
 ///
 /// reqwest gates its `tls` module behind its TLS features, so on the
