@@ -39,7 +39,7 @@ updates:
 
   # Track versions of CLI tools that CI installs from source.
   - package-ecosystem: "gomod"
-    directory: "/.github/ci-tools"
+    directory: "/.github/ci-tools/mtls-server"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 2

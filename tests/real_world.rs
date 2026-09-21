@@ -45,11 +45,9 @@ fn test_client() -> Client {
         .expect("client build should succeed")
 }
 
-/// CI sets `HTTPBIN_URL` to a local go-httpbin instance to insulate against flakiness from
-/// a public site (though some tests still hit live endpoints that can't be covered by httpbin,
-/// like SSL and proxy tests, though experience shows they're far more reliable).
-/// Local testing is free to do the same of course, but normally hits httpbin.org proper -
-/// no new go or extra tooling dependency.
+/// CI sets `HTTPBIN_URL` to `.github/ci-tools/mtls-server`, which serves the
+/// handful of endpoints used here, to insulate against flakiness from a public
+/// site. Local runs hit httpbin.org unless the same variable is set.
 #[cfg(any(
     native_winhttp,
     feature = "default-tls",

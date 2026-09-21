@@ -13,6 +13,10 @@
 //     https->http downgrade test has a local https origin instead of
 //     httpbin.org.
 //
+//   - -http-addr (no TLS): the handful of httpbin endpoints
+//     tests/real_world.rs actually uses, replacing the go-httpbin
+//     dependency.
+//
 // -cert-out writes the certificate so CI can trust it, which the redirect
 // test needs: it exercises the *default* client, which validates the chain.
 //
@@ -20,6 +24,8 @@
 package main
 
 import (
+	"compress/flate"
+	"compress/gzip"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -36,12 +42,14 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8443", "mutual-TLS listen address")
 	redirectAddr := flag.String("redirect-addr", "127.0.0.1:8444", "plain-TLS listen address")
+	httpAddr := flag.String("http-addr", "127.0.0.1:8080", "plain-HTTP listen address")
 	certOut := flag.String("cert-out", "", "write the server certificate (DER) here")
 	flag.Parse()
 
@@ -64,6 +72,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("listening on %s: %v", *redirectAddr, err)
 	}
+	httpListener, err := net.Listen("tcp", *httpAddr)
+	if err != nil {
+		log.Fatalf("listening on %s: %v", *httpAddr, err)
+	}
 
 	mtls := &http.Server{
 		Handler:           http.HandlerFunc(clientCertHandler),
@@ -76,11 +88,18 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go func() { log.Fatal(redirect.ServeTLS(redirectListener, "", "")) }()
+	httpbin := &http.Server{
+		Handler:           httpbinMux(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
-	// The readiness line the CI action waits for; printed only once both
-	// listeners are bound.
-	fmt.Printf("mtls-server ready on %s and %s\n", mtlsListener.Addr(), redirectListener.Addr())
+	go func() { log.Fatal(redirect.ServeTLS(redirectListener, "", "")) }()
+	go func() { log.Fatal(httpbin.Serve(httpListener)) }()
+
+	// The readiness line the CI action waits for; printed only once every
+	// listener is bound.
+	fmt.Printf("mtls-server ready on %s, %s and %s\n",
+		mtlsListener.Addr(), redirectListener.Addr(), httpListener.Addr())
 	log.Fatal(mtls.ServeTLS(mtlsListener, "", ""))
 }
 
@@ -128,6 +147,83 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", target)
 	w.WriteHeader(status)
+}
+
+// httpbinMux serves the endpoints tests/real_world.rs uses.  These are
+// deliberately minimal stand-ins for go-httpbin, matched to what the tests
+// assert rather than to httpbin's full response shape.
+func httpbinMux() *http.ServeMux {
+	mux := http.NewServeMux()
+
+	// /get -- the tests only check that the JSON mentions "headers".
+	mux.HandleFunc("/get", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"url": %q, "headers": {"Host": %q}}`, r.URL.String(), r.Host)
+	})
+
+	// /gzip and /deflate -- WinHTTP decompresses both transparently, and
+	// the tests assert on the decompressed body.
+	mux.HandleFunc("/gzip", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		defer zw.Close()
+		fmt.Fprint(zw, `{"gzipped": true}`)
+	})
+	mux.HandleFunc("/deflate", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "deflate")
+		zw, err := flate.NewWriter(w, flate.DefaultCompression)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer zw.Close()
+		fmt.Fprint(zw, `{"deflated": true}`)
+	})
+
+	// /redirect/N -- N hops, then /get, so the test can check where it
+	// landed as well as that it arrived.
+	mux.HandleFunc("/redirect/", func(w http.ResponseWriter, r *http.Request) {
+		remaining, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/redirect/"))
+		if err != nil || remaining < 0 {
+			http.Error(w, "redirect count must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		if remaining <= 1 {
+			http.Redirect(w, r, "/get", http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/redirect/%d", remaining-1), http.StatusFound)
+	})
+
+	// /stream-bytes/N -- exactly N bytes, chunked (no Content-Length).
+	mux.HandleFunc("/stream-bytes/", func(w http.ResponseWriter, r *http.Request) {
+		total, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/stream-bytes/"))
+		if err != nil || total < 0 {
+			http.Error(w, "byte count must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		const chunk = 1024
+		buf := make([]byte, chunk)
+		for sent := 0; sent < total; {
+			size := min(chunk, total-sent)
+			if _, err := rand.Read(buf[:size]); err != nil {
+				return
+			}
+			if _, err := w.Write(buf[:size]); err != nil {
+				return
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			sent += size
+		}
+	})
+
+	return mux
 }
 
 // selfSignedServerCert builds a throwaway certificate for 127.0.0.1, and

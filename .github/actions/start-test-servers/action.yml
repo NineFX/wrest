@@ -1,0 +1,81 @@
+name: 'Start TLS test servers'
+description: >
+  Builds and starts .github/ci-tools/mtls-server, which replaces
+  go-httpbin and provides the TLS origins the tests need:
+
+    HTTPBIN_URL      plain HTTP, the endpoints tests/real_world.rs uses
+    WREST_TLS_URL    TLS, for the https->http redirect test
+    WREST_MTLS_URL   TLS requiring a client certificate (Windows only)
+
+  On Windows it also creates a client certificate in CurrentUser\My with a
+  non-exportable private key and exports WREST_MTLS_THUMBPRINT, then
+  trusts the server certificate so the redirect test's default client can
+  validate the chain.
+
+  Like the server it replaces, the process is left running after the job;
+  GitHub runners are reaped automatically.
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: '.github/ci-tools/mtls-server/go.mod'
+
+    - name: Create client certificate
+      if: runner.os == 'Windows'
+      shell: pwsh
+      timeout-minutes: 2
+      run: ./.github/ci-tools/setup-test-certs.ps1 -ClientCertificate
+
+    - name: Start test server
+      # Launch from bash with `&`: Start-Process -NoNewWindow does not
+      # survive the step boundary, and the server has to outlive it.
+      shell: bash
+      timeout-minutes: 5
+      run: |
+        set -euo pipefail
+
+        bin=mtls-server
+        [[ "${RUNNER_OS:-}" == "Windows" ]] && bin=mtls-server.exe
+
+        (cd .github/ci-tools/mtls-server && go build -o "$bin" .)
+        "./.github/ci-tools/mtls-server/$bin" \
+          -addr 127.0.0.1:8443 \
+          -redirect-addr 127.0.0.1:8444 \
+          -http-addr 127.0.0.1:8080 \
+          -cert-out mtls-server-cert.der \
+          > mtls-server.log 2>&1 &
+
+        # Wait for the server's own readiness line rather than probing a
+        # port: a bare TCP probe logs a spurious handshake error.
+        ok=0
+        for _ in $(seq 1 60); do
+          grep -q "mtls-server ready" mtls-server.log 2>/dev/null && { ok=1; break; }
+          sleep 0.5
+        done
+
+        if [[ $ok -ne 1 ]]; then
+          echo "::error::mtls-server failed to start within 30s"
+          cat mtls-server.log || true
+          exit 1
+        fi
+
+        {
+          echo "HTTPBIN_URL=http://127.0.0.1:8080"
+          echo "WREST_TLS_URL=https://127.0.0.1:8444"
+          echo "WREST_MTLS_URL=https://127.0.0.1:8443"
+        } >> "$GITHUB_ENV"
+
+    - name: Trust the server certificate
+      # LocalMachine, not CurrentUser: trusting a root for the current user
+      # raises a consent dialog that never returns on a headless runner.
+      # The timeout is a backstop against any future prompt.
+      if: runner.os == 'Windows'
+      shell: pwsh
+      timeout-minutes: 2
+      run: |
+        ./.github/ci-tools/setup-test-certs.ps1 `
+          -TrustServerCertificate mtls-server-cert.der `
+          -TrustStore LocalMachine

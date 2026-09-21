@@ -76,23 +76,12 @@ jobs:
         toolchain: ${{ steps.resolve.outputs.toolchain }}
         components: ${{ steps.resolve.outputs.should-run-full-checks == 'true' && 'clippy' || '' }}
 
-    - name: Start go-httpbin
-      # Local tests just hit httpbin.org for simplicity, but that introduces a source
-      # of flakiness. For CI, we run a local instance of the service for reliability.
-      # Note some tests continue to hit live end-points that cannot be covered by httpbin
-      # (namely SSL and proxy tests), but experimentally these are far more reliable.
+    - name: Start test servers
+      # Local runs hit httpbin.org for simplicity, which is a source of
+      # flakiness; CI serves the same endpoints locally, plus the TLS
+      # origins the redirect and mutual-TLS tests need.
       if: steps.resolve.outputs.should-run-full-checks == 'true'
-      uses: ./.github/actions/start-httpbin
-
-    - name: Start TLS test server
-      # Native Windows jobs that run tests: the mTLS tests need the
-      # client-cert feature (all-native only) and skip otherwise, but the
-      # https->http redirect test runs in every native configuration.
-      if: >-
-        matrix.os == 'windows-latest'
-        && steps.resolve.outputs.should-run-full-checks == 'true'
-        && matrix.mode != 'all-reqwest'
-      uses: ./.github/actions/start-mtls
+      uses: ./.github/actions/start-test-servers
 
     - name: Run clippy
       if: steps.resolve.outputs.should-run-full-checks == 'true'
@@ -106,11 +95,8 @@ jobs:
       if: failure() && steps.resolve.outputs.should-run-full-checks == 'true'
       shell: bash
       run: |
-        echo "::group::go-httpbin log"
-        cat httpbin.log || echo "(no httpbin.log found)"
-        echo "::endgroup::"
-        echo "::group::mtls-server log"
-        cat mtls-server.log mtls-server.err.log 2>/dev/null || echo "(no mtls-server logs found)"
+        echo "::group::test server log"
+        cat mtls-server.log || echo "(no mtls-server.log found)"
         echo "::endgroup::"
 
     - name: Check library (MSRV)
@@ -180,11 +166,8 @@ jobs:
       with:
         tool: cargo-llvm-cov
 
-    - name: Start go-httpbin
-      uses: ./.github/actions/start-httpbin
-
-    - name: Start TLS test server
-      uses: ./.github/actions/start-mtls
+    - name: Start test servers
+      uses: ./.github/actions/start-test-servers
 
     - name: Generate coverage
       run: cargo llvm-cov --features __all-native-features --lcov --output-path lcov.info
@@ -193,10 +176,7 @@ jobs:
       if: failure()
       shell: bash
       run: |
-        echo "::group::go-httpbin log"
-        cat httpbin.log || echo "(no httpbin.log found)"
-        echo "::endgroup::"
-        echo "::group::mtls-server log"
+        echo "::group::test server log"
         cat mtls-server.log || echo "(no mtls-server.log found)"
         echo "::endgroup::"
 
