@@ -243,6 +243,22 @@ impl From<StoreLocation> for crate::abi::StoreLocation {
 /// this is reqwest's type with reqwest's constructors.
 ///
 /// Cheap to [`Clone`]: clones share the `CERT_CONTEXT` reference count.
+///
+/// # Lifetime
+///
+/// This refers to a certificate in the store; it does not own key
+/// material.  The reference keeps the certificate *context* alive in this
+/// process even if the certificate is deleted from the store afterwards,
+/// but the private key is resolved through its provider during each
+/// handshake.  So a certificate that is removed, whose key container is
+/// deleted, or whose token is unplugged between building the `Client` and
+/// sending a request produces a connection error at send time rather than
+/// when the `Identity` was built.  Those errors carry an explanation of
+/// which part failed.
+///
+/// [`reqwest::tls::Identity`](https://docs.rs/reqwest/latest/reqwest/tls/struct.Identity.html)
+/// has no equivalent failure mode: it holds the key material, so nothing
+/// external can invalidate it once constructed.
 #[cfg(feature = "client-cert")]
 pub struct Identity {
     /// Owned reference to the certificate. Released on drop.

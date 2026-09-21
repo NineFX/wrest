@@ -1553,6 +1553,15 @@ fn callback_error_to_error(code: u32, state: &RequestState, url: &Url) -> Error 
         }
     }
 
+    // Client-certificate failures: the bare Win32 text does not say which
+    // part went wrong, and the store may have changed since the `Identity`
+    // was built.
+    if let Some(detail) = crate::error::describe_client_cert_failure(code)
+        && let Some(source) = err.inner.source.take()
+    {
+        err.inner.source = Some(Box::new(ContextError::new(detail, source)));
+    }
+
     err
 }
 

@@ -320,9 +320,38 @@ fn error_kind_from_win32(code: u32) -> ErrorKind {
         ERROR_WINHTTP_NAME_NOT_RESOLVED => ErrorKind::Connect,
         ERROR_WINHTTP_CONNECTION_ERROR => ErrorKind::Connect,
         ERROR_WINHTTP_SECURE_FAILURE => ErrorKind::Connect,
+        // Client-certificate failures are handshake failures, so they
+        // classify the same way as any other TLS failure.
+        ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED => ErrorKind::Connect,
+        ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED_PROXY => ErrorKind::Connect,
+        ERROR_WINHTTP_CLIENT_CERT_NO_PRIVATE_KEY => ErrorKind::Connect,
+        ERROR_WINHTTP_CLIENT_CERT_NO_ACCESS_PRIVATE_KEY => ErrorKind::Connect,
         ERROR_WINHTTP_TIMEOUT => ErrorKind::Timeout,
         ERROR_WINHTTP_REDIRECT_FAILED => ErrorKind::Redirect,
         _ => ErrorKind::Request,
+    }
+}
+
+/// Explain a client-certificate failure, where the bare Win32 message is
+/// unhelpfully terse.
+///
+/// An [`Identity`](crate::tls::Identity) refers to a certificate in the
+/// Windows store rather than owning key material, so the store can change
+/// under it between building a `Client` and sending a request.  These are
+/// the codes that surface when it does.
+pub(crate) fn describe_client_cert_failure(code: u32) -> Option<&'static str> {
+    match code {
+        ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED | ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED_PROXY => {
+            Some("the server requires a client certificate; none was configured")
+        }
+        ERROR_WINHTTP_CLIENT_CERT_NO_PRIVATE_KEY => Some(
+            "the client certificate has no private key; it may have been removed from the store",
+        ),
+        ERROR_WINHTTP_CLIENT_CERT_NO_ACCESS_PRIVATE_KEY => Some(
+            "the client certificate's private key is not accessible; \
+             the token may be absent or locked",
+        ),
+        _ => None,
     }
 }
 
@@ -678,6 +707,29 @@ mod tests {
     // `error_kind_exclusivity_table` above (the "decode" row).
 
     #[test]
+    fn client_cert_failures_are_explained() {
+        // Each code must produce a distinct, actionable explanation; the
+        // bare Win32 text for these is unhelpfully terse.
+        let cases = [
+            (ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED, "requires a client certificate"),
+            (ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED_PROXY, "requires a client certificate"),
+            (ERROR_WINHTTP_CLIENT_CERT_NO_PRIVATE_KEY, "no private key"),
+            (ERROR_WINHTTP_CLIENT_CERT_NO_ACCESS_PRIVATE_KEY, "not accessible"),
+        ];
+
+        for (code, expected) in cases {
+            let detail = describe_client_cert_failure(code)
+                .unwrap_or_else(|| panic!("{code} should be explained"));
+            assert!(detail.contains(expected), "{code}: got {detail}");
+        }
+
+        assert!(
+            describe_client_cert_failure(ERROR_WINHTTP_TIMEOUT).is_none(),
+            "unrelated codes must not be explained as certificate failures"
+        );
+    }
+
+    #[test]
     fn decode_error_message() {
         let err = Error::decode("JSON deserialization failed");
         // Display shows kind prefix; detail is in the source chain.
@@ -741,6 +793,24 @@ mod tests {
                 "connect (conn)",
             ),
             (ERROR_WINHTTP_SECURE_FAILURE, Error::is_connect, None, "connect (tls)"),
+            (
+                ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED,
+                Error::is_connect,
+                None,
+                "connect (client cert needed)",
+            ),
+            (
+                ERROR_WINHTTP_CLIENT_CERT_NO_PRIVATE_KEY,
+                Error::is_connect,
+                None,
+                "connect (no private key)",
+            ),
+            (
+                ERROR_WINHTTP_CLIENT_CERT_NO_ACCESS_PRIVATE_KEY,
+                Error::is_connect,
+                None,
+                "connect (private key inaccessible)",
+            ),
             (ERROR_WINHTTP_TIMEOUT, Error::is_timeout, Some(io::ErrorKind::TimedOut), "timeout"),
             (ERROR_WINHTTP_REDIRECT_FAILED, Error::is_redirect, None, "redirect"),
             // Unknown code falls through to Request.
