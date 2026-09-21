@@ -4,6 +4,11 @@
 //! the Windows store.  `.github/actions/start-mtls` sets `WREST_MTLS_URL`
 //! and `WREST_MTLS_THUMBPRINT` (40 hex chars, for a `CurrentUser\MY`
 //! certificate with a non-exportable key); without both, these skip.
+//!
+//! To reproduce locally on Windows, run
+//! `.github/ci-tools/setup-test-certs.ps1 -ClientCertificate`, start
+//! `.github/ci-tools/mtls-server`, and export the two variables.
+//! `-Cleanup` removes the certificates again.
 
 #![cfg(all(native_winhttp, feature = "client-cert"))]
 #![expect(clippy::tests_outside_test_module)]
