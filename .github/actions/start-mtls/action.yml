@@ -1,10 +1,13 @@
 name: 'Start mTLS test server'
 description: >
   Windows only.  Creates a client certificate in CurrentUser\My with a
-  non-exportable private key, starts a TLS server requiring a client
-  certificate, and exports WREST_MTLS_URL and WREST_MTLS_THUMBPRINT for
-  tests/mtls.rs.  The key is non-exportable so the handshake can only
-  succeed if SChannel drives it in place.
+  non-exportable private key, starts the two-listener TLS test server, and
+  exports WREST_MTLS_URL / WREST_MTLS_THUMBPRINT for tests/mtls.rs and
+  WREST_TLS_URL for the https->http redirect test in tests/real_world.rs.
+  The client key is non-exportable so the mTLS handshake can only succeed
+  if SChannel drives it in place.  The server certificate is added to
+  CurrentUser\Root because the redirect test uses a default client, which
+  validates the chain.
 
   Like start-httpbin, the server is left running after the job; GitHub
   runners are reaped automatically.
@@ -47,7 +50,10 @@ runs:
       run: |
         set -euo pipefail
         (cd .github/ci-tools/mtls-server && go build -o mtls-server.exe .)
-        ./.github/ci-tools/mtls-server/mtls-server.exe -addr 127.0.0.1:8443 \
+        ./.github/ci-tools/mtls-server/mtls-server.exe \
+          -addr 127.0.0.1:8443 \
+          -redirect-addr 127.0.0.1:8444 \
+          -cert-out mtls-server-cert.der \
           > mtls-server.log 2>&1 &
 
         # Wait for the server's own readiness line rather than probing the
@@ -65,3 +71,18 @@ runs:
         fi
 
         echo "WREST_MTLS_URL=https://127.0.0.1:8443" >> "$GITHUB_ENV"
+
+    - name: Trust the server certificate
+      # The redirect test drives a default client, so the chain has to
+      # validate; the mTLS tests disable validation and do not need this.
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (-not (Test-Path mtls-server-cert.der)) {
+          throw 'mtls-server did not write its certificate'
+        }
+        $cert = Import-Certificate -FilePath mtls-server-cert.der `
+          -CertStoreLocation 'Cert:\CurrentUser\Root'
+        Write-Host "trusted server certificate $($cert.Thumbprint)"
+
+        "WREST_TLS_URL=https://127.0.0.1:8444" >> $env:GITHUB_ENV

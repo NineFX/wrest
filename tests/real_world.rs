@@ -190,8 +190,11 @@ async fn https_only_blocks_https_to_http_redirect() {
 #[tokio::test]
 #[cfg(native_winhttp)]
 async fn winhttp_default_blocks_https_to_http_redirect() {
-    // Always hits live https httpbin: the policy only fires on an https->http downgrade, which CI's http-only local override can't produce.
-    let target = "https://httpbin.org/redirect-to?url=http%3A%2F%2Fexample.com%2F&status_code=302";
+    // The policy only fires on an https->http downgrade, which CI's
+    // http-only go-httpbin cannot produce.  CI points WREST_TLS_URL at the
+    // local TLS test server instead; without it this hits live httpbin.org.
+    let base = std::env::var("WREST_TLS_URL").unwrap_or_else(|_| "https://httpbin.org".to_string());
+    let target = format!("{base}/redirect-to?url=http%3A%2F%2Fexample.com%2F&status_code=302");
 
     let client = test_client();
 

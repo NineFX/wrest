@@ -84,11 +84,14 @@ jobs:
       if: steps.resolve.outputs.should-run-full-checks == 'true'
       uses: ./.github/actions/start-httpbin
 
-    - name: Start mTLS test server
-      # Windows + all-native only: the client certificate lives in the
-      # Windows store and the test needs the `client-cert` feature, which
-      # only `__all-native-features` turns on.
-      if: matrix.os == 'windows-latest' && matrix.mode == 'all'
+    - name: Start TLS test server
+      # Native Windows jobs that run tests: the mTLS tests need the
+      # client-cert feature (all-native only) and skip otherwise, but the
+      # https->http redirect test runs in every native configuration.
+      if: >-
+        matrix.os == 'windows-latest'
+        && steps.resolve.outputs.should-run-full-checks == 'true'
+        && matrix.mode != 'all-reqwest'
       uses: ./.github/actions/start-mtls
 
     - name: Run clippy
