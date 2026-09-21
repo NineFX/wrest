@@ -144,7 +144,7 @@ without base URL resolution yields 263 applicable test cases.
 Every RFC-3986-valid URL in the test suite is correctly parsed by WinHTTP.  The
 divergences are entirely in how each handles **invalid or edge-case input**:
 
-### WinHTTP is more accepting than WHATWG (145 cases)
+### WinHTTP is more accepting than WHATWG (138 cases)
 
 These are URLs that WHATWG **rejects** but WinHTTP **accepts**.  WinHTTP's
 permissiveness here extends into territory that both RFC 3986 and WHATWG consider
@@ -158,11 +158,30 @@ invalid.
 | Numeric-suffix hosts (WHATWG tries IPv4 parse, fails) | 12 | `http://foo.1.2.3.4`, `http://foo.09` |
 | Brackets around non-IPv6 host | 10 | `http://[www.google.com]/` |
 | Degenerate URLs (empty host, `?`-only, `#`-only, `///`) | 8 | `http://?`, `http://#`, `https:///` |
-| Invalid IDNA / punycode | 7 | `http://a.b.c.xn--pokxncvks` |
 | Raw forbidden chars in host | 7 | `http://a<b`, `http://a>b`, `http://a b/` |
 | Missing host after credentials | 5 | `http://user:pass@/`, `http://@/www.example.com` |
 | Unicode / replacement char in host | 5 | `https://💩.123/`, `https://\uFFFD` |
 | Other (port-with-no-host, soft hyphen) | 9 | `http://@:www.example.com`, `https://%C2%AD/` |
+
+### The reqwest passthrough is more restrictive than both (7 cases)
+
+These cases used to be listed above as WinHTTP being more accepting than
+WHATWG.  That was wrong, or has become wrong: the current `urltestdata.json`
+entries carry no `failure` key and assert
+`hostname: "a.b.c.xn--pokxncvks"`, so WHATWG expects them to **parse**.  The
+host is ASCII-lowercased and the punycode payload is never decoded.
+
+| Input | WHATWG | WinHTTP (native) | `url` crate (passthrough) |
+|-------|--------|------------------|---------------------------|
+| `http://a.b.c.xn--pokxncvks` | parses | parses | `IdnaError` |
+| `https://xn--/` | parses | parses | `IdnaError` |
+
+`WinHttpCrackUrl` does not validate punycode, which here matches WHATWG.  The
+`url` crate applies UTS46 strictly and rejects a label that is not decodable
+punycode, so `wrest::Url::parse` inherits that rejection on the reqwest
+passthrough and only there.  Short of reimplementing host parsing, wrest cannot
+change it; `tests/url_parse.rs` counts these as IDNA divergences rather than
+failures, and stays strict on the native backend.
 
 ### WinHTTP is more restrictive than WHATWG (28 cases)
 
