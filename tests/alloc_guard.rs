@@ -10,8 +10,9 @@
 //! slow it down for no benefit.
 //!
 //! The measurement is live allocations, not bytes: one leaked `Arc` per
-//! request is one allocation that never returns, which shows as a count
-//! rising with iterations rather than settling.
+//! request is one allocation that never returns. Absolute counts cannot
+//! be asserted -- pools and caches retain memory legitimately -- so what
+//! is measured is whether growth decays across successive batches.
 
 #![cfg(native_winhttp)]
 #![expect(clippy::tests_outside_test_module)]
@@ -25,13 +26,6 @@ use wrest::Client;
 
 /// Live allocations: incremented on alloc, decremented on dealloc.
 static LIVE: AtomicIsize = AtomicIsize::new(0);
-
-/// Iterations per measured loop, and the growth allowed across them.
-///
-/// One leaked allocation per iteration would be `ITERATIONS`; the
-/// allowance absorbs genuine steady-state drift well below that.
-const ITERATIONS: usize = 200;
-const ALLOWED_GROWTH: isize = 50;
 
 struct CountingAllocator;
 
@@ -68,13 +62,22 @@ fn live_allocations() -> isize {
     LIVE.load(Ordering::Relaxed)
 }
 
-/// A completed request must not leave allocations behind.
+/// A leak shows as growth that does not decay.
 ///
-/// Reaching a steady state is the signal: caches and pools legitimately
-/// grow during warmup, but a per-request leak keeps growing after it.
+/// Absolute counts are meaningless here: connection pools, tokio and
+/// wiremock all retain memory legitimately, and the figure never settles
+/// at a knowable constant. What distinguishes a leak is the *shape* —
+/// caches warm and their growth falls away, while one leaked allocation
+/// per request keeps growing at the same rate forever.
+///
+/// So this measures successive equal batches and requires the growth to
+/// decay. It is a single test on purpose: the counter is process-global,
+/// and two tests running concurrently in one binary measure each other.
 #[tokio::test]
-async fn request_cycle_reaches_a_steady_state() {
-    const WARMUP: usize = 50;
+#[ignore = "resource measurement: slow, and run in CI via --ignored"]
+async fn allocation_growth_decays() {
+    const WARMUP: usize = 100;
+    const BATCH: usize = 200;
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -89,72 +92,46 @@ async fn request_cycle_reaches_a_steady_state() {
         .expect("client should build");
     let url = format!("{}/alloc", server.uri());
 
-    // Warm up so pools and caches have settled before measuring.
-    for _ in 0..WARMUP {
-        let resp = client.get(&url).send().await.expect("warmup request");
-        let _ = resp.text().await.expect("warmup body");
-    }
-
-    let before = live_allocations();
-    for _ in 0..ITERATIONS {
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .expect("request should succeed");
-        let _ = resp.text().await.expect("body should read");
-    }
-    let after = live_allocations();
-
-    let growth = after.saturating_sub(before);
-    assert!(
-        growth < ALLOWED_GROWTH,
-        "live allocations grew by {growth} over {ITERATIONS} requests ({before} -> {after})"
-    );
-}
-
-/// Abandoned responses must not leave allocations behind either.
-///
-/// Dropping a response early is the path where the callback context is
-/// reclaimed by the closing handshake rather than by normal completion.
-#[tokio::test]
-async fn abandoned_responses_reach_a_steady_state() {
-    const WARMUP: usize = 50;
-
-    let body = "x".repeat(256 * 1024);
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/alloc-abandon"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(body))
-        .mount(&server)
-        .await;
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("client should build");
-    let url = format!("{}/alloc-abandon", server.uri());
-
-    for _ in 0..WARMUP {
-        drop(client.get(&url).send().await.expect("warmup request"));
-    }
-
-    let before = live_allocations();
-    for _ in 0..ITERATIONS {
-        drop(
-            client
-                .get(&url)
+    // Half the batches read the body, half abandon it: the abandoned path
+    // reclaims the callback context through the closing handshake rather
+    // than normal completion.
+    async fn batch(client: &Client, url: &str, n: usize, read_body: bool) {
+        for i in 0..n {
+            let resp = client
+                .get(url)
                 .send()
                 .await
-                .expect("request should succeed"),
-        );
+                .expect("request should succeed");
+            if read_body || i % 2 == 0 {
+                let _ = resp.text().await.expect("body should read");
+            } else {
+                drop(resp);
+            }
+        }
     }
-    let after = live_allocations();
 
-    let growth = after.saturating_sub(before);
+    batch(&client, &url, WARMUP, true).await;
+
+    let mut growth = Vec::new();
+    for _ in 0..3 {
+        let before = live_allocations();
+        batch(&client, &url, BATCH, false).await;
+        growth.push(live_allocations().saturating_sub(before));
+    }
+
+    // Printed so the numbers are visible in CI, which runs this with
+    // --nocapture; a threshold alone would hide the trend.
+    println!("live-allocation growth per {BATCH}-request batch: {growth:?}");
+
+    let first = growth[0];
+    let last = growth[2];
     assert!(
-        growth < ALLOWED_GROWTH,
-        "live allocations grew by {growth} over {ITERATIONS} abandoned responses \
-         ({before} -> {after})"
+        last < first,
+        "allocation growth is not decaying across batches ({growth:?}); \
+         a per-request leak grows at a constant rate"
+    );
+    assert!(
+        last < BATCH.cast_signed(),
+        "last batch grew by {last} over {BATCH} requests, at least one allocation each ({growth:?})"
     );
 }

@@ -102,6 +102,15 @@ jobs:
         cargo test --lib ${{ steps.resolve.outputs.flags }}
         identity_after_certificate_is_deleted -- --nocapture
 
+    - name: Run resource tests
+      # Marked #[ignore] so `cargo test` stays fast for contributors:
+      # these measure handle and allocation counts over hundreds of
+      # iterations, which is slow and pointless to repeat locally.
+      if: matrix.os == 'windows-latest' && matrix.mode == 'all'
+      run: >-
+        cargo test --all-targets ${{ steps.resolve.outputs.flags }}
+        -- --ignored --nocapture
+
     - name: Diagnose failure
       if: failure() && steps.resolve.outputs.should-run-full-checks == 'true'
       shell: bash

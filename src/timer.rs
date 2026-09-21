@@ -325,6 +325,7 @@ mod tests {
     /// -before-firing and the fired-then-dropped paths are covered, since
     /// they tear down differently.
     #[test]
+    #[ignore = "resource measurement: slow, and run in CI via --ignored"]
     fn delays_do_not_leak_handles() {
         const WARMUP: usize = 20;
         const ITERATIONS: usize = 300;

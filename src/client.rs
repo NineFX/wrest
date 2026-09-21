@@ -1572,6 +1572,7 @@ mod tests {
     /// initialisation inside WinHTTP legitimately opens handles that then
     /// stay open.
     #[test]
+    #[ignore = "resource measurement: slow, and run in CI via --ignored"]
     fn building_clients_does_not_leak_handles() {
         const WARMUP: usize = 20;
         const ITERATIONS: usize = 200;
@@ -1600,6 +1601,7 @@ mod tests {
     /// Covers the connection and request handles, which are opened and
     /// closed per request, unlike the session.
     #[tokio::test]
+    #[ignore = "resource measurement: slow, and run in CI via --ignored"]
     async fn sending_requests_does_not_leak_handles() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1647,6 +1649,7 @@ mod tests {
     /// unexpected status, a `?` on a header check -- and that is where a
     /// handle is most easily stranded.
     #[tokio::test]
+    #[ignore = "resource measurement: slow, and run in CI via --ignored"]
     async fn dropping_responses_unread_does_not_leak_handles() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1699,6 +1702,7 @@ mod tests {
     /// the success path, and a connect that never completes still opened
     /// connection and request handles first.
     #[tokio::test]
+    #[ignore = "resource measurement: slow, and run in CI via --ignored"]
     async fn failed_requests_do_not_leak_handles() {
         const WARMUP: usize = 5;
         const ITERATIONS: usize = 100;
@@ -1746,6 +1750,7 @@ mod tests {
     /// WinHTTP still has work in flight -- a different teardown path from
     /// either success or a connect failure.
     #[tokio::test]
+    #[ignore = "resource measurement: slow, and run in CI via --ignored"]
     async fn timed_out_requests_do_not_leak_handles() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
