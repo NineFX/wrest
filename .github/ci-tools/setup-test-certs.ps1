@@ -3,8 +3,8 @@
     Creates (or removes) the certificates wrest's TLS tests need.
 
 .DESCRIPTION
-    Called by .github/actions/start-mtls, and runnable by hand on a Windows
-    box to reproduce what CI does.
+    Called by .github/actions/start-test-servers, and runnable by hand on a
+    Windows box to reproduce what CI does.
 
     -ClientCertificate creates a certificate in CurrentUser\My with a
     NON-EXPORTABLE key -- the case reqwest's Identity cannot express -- and
@@ -15,9 +15,18 @@
     a default client that validates the chain.
 
 .EXAMPLE
-    ./setup-test-certs.ps1 -ClientCertificate
-    ./setup-test-certs.ps1 -TrustServerCertificate mtls-server-cert.der
-    ./setup-test-certs.ps1 -Cleanup
+    # Local Windows run, from the repository root, with the server started
+    # from .github/ci-tools/mtls-server:
+    ./.github/ci-tools/setup-test-certs.ps1 -ClientCertificate
+    ./.github/ci-tools/setup-test-certs.ps1 `
+        -TrustServerCertificate mtls-server-cert.der -TrustStore CurrentUser
+    $env:HTTPBIN_URL = 'http://127.0.0.1:8080'
+    $env:WREST_TLS_URL = 'https://127.0.0.1:8444'
+    $env:WREST_MTLS_URL = 'https://127.0.0.1:8443'
+    cargo test --features __all-native-features
+
+    # Afterwards, to remove the certificates again:
+    ./.github/ci-tools/setup-test-certs.ps1 -Cleanup
 #>
 [CmdletBinding()]
 param(
@@ -44,12 +53,14 @@ $ErrorActionPreference = 'Stop'
 $ClientSubject = 'CN=wrest-mtls-test-client'
 $ServerSubject = 'CN=wrest-mtls-test-server'
 
-# Append to GITHUB_ENV when running under Actions; print either way so a
-# local run can see what to export.
+# Append to GITHUB_ENV when running under Actions, and set the variable in
+# the current session either way -- a .ps1 shares the caller's process, so
+# a local run needs no copy-and-paste.
 function Publish-Variable {
     param([string] $Name, [string] $Value)
 
     Write-Host "$Name=$Value"
+    Set-Item -Path "env:$Name" -Value $Value
     if ($env:GITHUB_ENV) {
         "$Name=$Value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
     }

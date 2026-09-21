@@ -1,7 +1,7 @@
 //! Mutual-TLS tests against a server that demands a client certificate.
 //!
 //! The only tests that exercise a real handshake with a certificate from
-//! the Windows store.  `.github/actions/start-mtls` sets `WREST_MTLS_URL`
+//! the Windows store.  `.github/actions/start-test-servers` sets `WREST_MTLS_URL`
 //! and `WREST_MTLS_THUMBPRINT` (40 hex chars, for a `CurrentUser\MY`
 //! certificate with a non-exportable key); without both, these skip.
 //!
