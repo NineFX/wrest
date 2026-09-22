@@ -1,0 +1,52 @@
+name: 'Start mTLS test server'
+description: >
+  Windows only.  Creates client certificates in CurrentUser\My with
+  non-exportable keys, starts a TLS server that requires a client
+  certificate, and exports WREST_MTLS_URL, WREST_MTLS_THUMBPRINT and
+  WREST_MTLS_DISPOSABLE_THUMBPRINT for tests/mtls.rs.
+
+  The keys are non-exportable so the handshake can only succeed if
+  SChannel drives them in place, which is the case this feature exists
+  for.  Like start-httpbin, the server is left running after the job;
+  GitHub runners are reaped automatically.
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: '.github/ci-tools/mtls-server/go.mod'
+
+    - name: Create client certificates
+      shell: pwsh
+      run: |
+        ./.github/ci-tools/setup-test-certs.ps1 -ClientCertificate
+        ./.github/ci-tools/setup-test-certs.ps1 -DisposableCertificate
+
+    - name: Start mTLS server
+      # Mirrors start-httpbin: build, then launch from bash with `&`.
+      # Start-Process -NoNewWindow does not survive the step boundary, and
+      # the server has to outlive it.
+      shell: bash
+      run: |
+        set -euo pipefail
+        (cd .github/ci-tools/mtls-server && go build -o mtls-server.exe .)
+        ./.github/ci-tools/mtls-server/mtls-server.exe -addr 127.0.0.1:8443 \
+          > mtls-server.log 2>&1 &
+
+        # Wait for the server's own readiness line rather than probing the
+        # port: a bare TCP probe logs a spurious handshake error.
+        ok=0
+        for _ in $(seq 1 60); do
+          grep -q "mtls-server ready" mtls-server.log 2>/dev/null && { ok=1; break; }
+          sleep 0.5
+        done
+
+        if [[ $ok -ne 1 ]]; then
+          echo "::error::mtls-server failed to start within 30s"
+          cat mtls-server.log || true
+          exit 1
+        fi
+
+        echo "WREST_MTLS_URL=https://127.0.0.1:8443" >> "$GITHUB_ENV"
