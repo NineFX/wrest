@@ -141,6 +141,20 @@ stream  = ["reqwest?/stream"]
 
 # -- Diagnostics & compatibility ------------------------------------
 
+## Client certificate authentication using the Windows certificate store.
+##
+## Enables [`tls::Identity`], `tls::list_client_certificates()` and
+## `ClientBuilder::identity()`, backed by
+## `WINHTTP_OPTION_CLIENT_CERT_CONTEXT`.  The certificate is referenced in
+## place: no private key material is ever exported, so hardware-backed
+## (smartcard / TPM / PIV) keys work.
+##
+## This is a wrest extension on the native backend.  reqwest's `Identity`
+## constructors take exportable key material and cannot reference a
+## store-resident certificate, so there is nothing to forward to on the
+## reqwest passthrough, where `tls::Identity` remains reqwest's own type.
+client-cert      = ["windows-sys/Win32_Security_Cryptography"]
+
 ## Enables diagnostic logging via the [`tracing`](https://docs.rs/tracing) crate.
 ##
 ## When enabled, wrest emits `trace!`-level events for WinHTTP
@@ -176,7 +190,7 @@ panicking-compat = []
 ## coverage without accidentally disabling the native WinHTTP backend.
 __all-native-features = [
     "charset", "http2", "default-tls", "native-tls", "system-proxy",
-    "json", "form", "query", "tracing",
+    "json", "form", "query", "tracing", "client-cert",
     "panicking-compat", "noop-compat",
     "gzip", "deflate", "brotli", "zstd",
     "stream",

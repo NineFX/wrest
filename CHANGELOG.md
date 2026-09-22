@@ -6,11 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## Unreleased
 
+### Added
+- Client certificates (`client-cert` feature): `tls::Identity` plus `ClientBuilder::identity()`, backed by `WINHTTP_OPTION_CLIENT_CERT_CONTEXT`. The certificate is referenced in the Windows store rather than imported from exported key material, so smartcard, TPM and PIV-backed keys work - which reqwest's `Identity` cannot express, since all of its constructors take a PKCS#12 archive or a PEM key. Constructors are `Identity::from_windows_store()` and the `unsafe from_cert_context()` escape hatch for a `CERT_CONTEXT` obtained elsewhere, e.g. from the `schannel` crate. reqwest's own PKCS#12/PEM constructors are not implemented. On the reqwest passthrough `tls::Identity` remains reqwest's type with reqwest's constructors, and the feature is inert.
+- `tls::list_client_certificates()` returns the certificates in a store that could actually be presented - a private key is associated, the certificate is currently valid, and it allows client authentication - as plain `CertificateInfo` metadata, leaving selection to an iterator rather than a filter API. Key association is read from the store's own record rather than by acquiring the key, so listing never reaches a smartcard or TPM and never prompts for a PIN.
+
 ### Fixed
 - DLL load: load system icu.dll from system32 to prevent dll planting.
 - HTTP Timeouts: keep explicit zero and positive sub-millisecond phase timeouts finite by clamping/rounding to 1ms.
 - Parsing: replace ad hoc Content-Type parsing with `mime` crate for more precise edge-case handling.
 - Request bodies: retry unwritten bytes after partial `WinHttpWriteData` success.
+- The four WinHTTP client-certificate error codes (`CLIENT_AUTH_CERT_NEEDED`, its proxy variant, `CLIENT_CERT_NO_PRIVATE_KEY` and `CLIENT_CERT_NO_ACCESS_PRIVATE_KEY`) are classified as `Error::is_connect()` rather than falling through to `is_request()`, and carry an explanation of which part failed - the bare Win32 text does not distinguish "the server wanted a certificate" from "the key is gone" from "the key is unreachable".
 
 ### Changed
 - CI - Supply chain: SHA-pin all external actions in CI.
