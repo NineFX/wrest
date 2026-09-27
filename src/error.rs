@@ -320,9 +320,38 @@ fn error_kind_from_win32(code: u32) -> ErrorKind {
         ERROR_WINHTTP_NAME_NOT_RESOLVED => ErrorKind::Connect,
         ERROR_WINHTTP_CONNECTION_ERROR => ErrorKind::Connect,
         ERROR_WINHTTP_SECURE_FAILURE => ErrorKind::Connect,
+        // Client-certificate failures are handshake failures, so they
+        // classify the same way as any other TLS failure.
+        ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED => ErrorKind::Connect,
+        ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED_PROXY => ErrorKind::Connect,
+        ERROR_WINHTTP_CLIENT_CERT_NO_PRIVATE_KEY => ErrorKind::Connect,
+        ERROR_WINHTTP_CLIENT_CERT_NO_ACCESS_PRIVATE_KEY => ErrorKind::Connect,
         ERROR_WINHTTP_TIMEOUT => ErrorKind::Timeout,
         ERROR_WINHTTP_REDIRECT_FAILED => ErrorKind::Redirect,
         _ => ErrorKind::Request,
+    }
+}
+
+/// Explain a client-certificate failure, where the bare Win32 message is
+/// unhelpfully terse.
+///
+/// An [`Identity`](crate::tls::Identity) refers to a certificate in the
+/// Windows store rather than owning key material, so the store can change
+/// under it between building a `Client` and sending a request.  These are
+/// the codes that surface when it does.
+pub(crate) fn describe_client_cert_failure(code: u32) -> Option<&'static str> {
+    match code {
+        ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED | ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED_PROXY => {
+            Some("the server requires a client certificate; none was configured")
+        }
+        ERROR_WINHTTP_CLIENT_CERT_NO_PRIVATE_KEY => Some(
+            "the client certificate has no private key; it may have been removed from the store",
+        ),
+        ERROR_WINHTTP_CLIENT_CERT_NO_ACCESS_PRIVATE_KEY => Some(
+            "the client certificate's private key is not accessible; \
+             the token may be absent or locked",
+        ),
+        _ => None,
     }
 }
 

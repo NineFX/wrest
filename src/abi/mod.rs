@@ -12,11 +12,16 @@
 //!
 //! * [`winhttp`] -- WinHTTP session, request, query, and I/O wrappers
 //! * [`encoding`] -- `MultiByteToWideChar` (NLS) and ICU charset decoding
+//! * `cert` -- crypt32 certificate-store access (`client-cert` feature)
 
+#[cfg(feature = "client-cert")]
+mod cert;
 mod encoding;
 mod winhttp;
 
 // Re-export everything so callers use `crate::abi::winhttp_open_session` etc.
+#[cfg(feature = "client-cert")]
+pub(crate) use cert::*;
 pub(crate) use encoding::*;
 pub(crate) use winhttp::*;
 

@@ -1,0 +1,152 @@
+//! Mutual-TLS tests against a server that demands a client certificate.
+//!
+//! The only tests that exercise a real handshake with a certificate from
+//! the Windows store.  `.github/actions/start-test-servers` sets `WREST_MTLS_URL`
+//! and `WREST_MTLS_THUMBPRINT` (40 hex chars, for a `CurrentUser\MY`
+//! certificate with a non-exportable key); without both, these skip.
+//!
+//! To reproduce locally on Windows, run
+//! `.github/ci-tools/run-local-tests.ps1`, which starts the server, creates
+//! the certificates and runs the suite; `-Cleanup` undoes it.
+
+#![cfg(all(native_winhttp, feature = "client-cert"))]
+#![expect(clippy::tests_outside_test_module)]
+
+use std::time::Duration;
+use wrest::{
+    Client, StatusCode,
+    tls::{Identity, StoreLocation},
+};
+
+/// The CI-provided environment, or `None` when these tests should skip.
+///
+/// Also asserts the server is reachable: a dead server is
+/// indistinguishable from a rejected handshake, so without this check
+/// [`without_an_identity_the_handshake_fails`] would pass whether or not
+/// the server is running.
+fn mtls_env() -> Option<(String, [u8; 20])> {
+    let url = std::env::var("WREST_MTLS_URL").ok()?;
+    let thumbprint = std::env::var("WREST_MTLS_THUMBPRINT").ok()?;
+    let thumbprint = parse_thumbprint(&thumbprint)
+        .unwrap_or_else(|| panic!("WREST_MTLS_THUMBPRINT is not 40 hex chars: {thumbprint:?}"));
+
+    let authority = url
+        .strip_prefix("https://")
+        .unwrap_or_else(|| panic!("WREST_MTLS_URL should be https: {url}"));
+    if let Err(e) = std::net::TcpStream::connect(authority) {
+        panic!("mTLS server at {authority} is not reachable ({e}); these tests cannot be trusted");
+    }
+
+    Some((url, thumbprint))
+}
+
+/// Parse 40 hex characters into a SHA-1 thumbprint. Windows reports
+/// thumbprints in uppercase; accept either case.
+fn parse_thumbprint(hex: &str) -> Option<[u8; 20]> {
+    let hex = hex.trim();
+    if hex.len() != 40 {
+        return None;
+    }
+    let (pairs, remainder) = hex.as_bytes().as_chunks::<2>();
+    debug_assert!(remainder.is_empty(), "40 is even");
+
+    let mut out = [0u8; 20];
+    for (slot, pair) in out.iter_mut().zip(pairs) {
+        let pair = std::str::from_utf8(pair).ok()?;
+        *slot = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(out)
+}
+
+fn hex_encode(bytes: &[u8; 20]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(40), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// The server answers with the thumbprint of the certificate it actually
+/// received, so this asserts SChannel presented *our* certificate -- not
+/// merely that some handshake succeeded.
+#[tokio::test]
+async fn client_certificate_is_presented_to_the_server() {
+    let Some((url, thumbprint)) = mtls_env() else {
+        eprintln!("skipping: WREST_MTLS_URL / WREST_MTLS_THUMBPRINT not set");
+        return;
+    };
+
+    let identity = Identity::from_windows_store(StoreLocation::CurrentUser, "MY", &thumbprint)
+        .expect("CI installs this certificate in CurrentUser\\MY");
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        // The test server's certificate is self-signed and generated per
+        // run: this exercises client authentication, not chain building.
+        .tls_danger_accept_invalid_certs(true)
+        .identity(identity)
+        .build()
+        .expect("client with identity should build");
+
+    let response = client
+        .get(format!("{url}/client-cert"))
+        .send()
+        .await
+        .expect("mutual-TLS handshake should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let presented = response.text().await.expect("body should read");
+    assert_eq!(
+        presented.trim(),
+        hex_encode(&thumbprint),
+        "server saw a different certificate than the one configured"
+    );
+}
+
+/// Without an identity the handshake must fail -- otherwise the test
+/// above could pass for reasons unrelated to the certificate.
+#[tokio::test]
+async fn without_an_identity_the_handshake_fails() {
+    let Some((url, _)) = mtls_env() else {
+        eprintln!("skipping: WREST_MTLS_URL not set");
+        return;
+    };
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .tls_danger_accept_invalid_certs(true)
+        .build()
+        .expect("client without identity should build");
+
+    let result = client.get(format!("{url}/client-cert")).send().await;
+
+    // `mtls_env` has already proven the port is open, so this can only
+    // be the server refusing a handshake with no client certificate.
+    let err = result.expect_err("server requires a client certificate");
+    eprintln!("no-identity error (informational): {err:?}");
+}
+
+/// The certificate CI installs must appear in the listing, and the
+/// listing's thumbprint must be the one the environment reports.
+#[tokio::test]
+async fn ci_certificate_appears_in_the_listing() {
+    let Some((_, thumbprint)) = mtls_env() else {
+        eprintln!("skipping: WREST_MTLS_THUMBPRINT not set");
+        return;
+    };
+
+    let certs = wrest::tls::list_client_certificates(StoreLocation::CurrentUser, "MY")
+        .expect("CurrentUser\\MY should open");
+
+    let found = certs
+        .iter()
+        .find(|c| c.thumbprint == thumbprint)
+        .unwrap_or_else(|| {
+            let seen: Vec<_> = certs.iter().map(|c| c.thumbprint_hex()).collect();
+            panic!("installed certificate is missing from the listing; saw {seen:?}")
+        });
+
+    assert!(found.subject.contains("wrest-test-client"), "unexpected subject: {}", found.subject);
+    assert!(found.not_after > std::time::SystemTime::now(), "listed an expired certificate");
+}

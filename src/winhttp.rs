@@ -911,7 +911,7 @@ pub(crate) async fn execute_request(
     headers: &[(String, String)],
     body: Option<Body>,
     proxy_config: &ProxyConfig,
-    accept_invalid_certs: bool,
+    tls: &crate::tls::TlsConfig,
 ) -> Result<RawResponse, Error> {
     // Check per-request NO_PROXY override
     let per_request_proxy = proxy_config.resolve(&url.host, url.is_https);
@@ -1004,8 +1004,18 @@ pub(crate) async fn execute_request(
         }
     }
 
+    // Present a client certificate for mutual TLS, if one is configured.
+    // WinHTTP duplicates the context internally, so the `Identity` keeps
+    // ownership of its own reference.
+    #[cfg(feature = "client-cert")]
+    if let Some(identity) = &tls.identity
+        && url.is_https
+    {
+        abi::winhttp_set_client_cert(request_handle.raw(), identity.as_ptr()).url_context(url)?;
+    }
+
     // Disable certificate validation if requested
-    if accept_invalid_certs && url.is_https {
+    if tls.accept_invalid_certs && url.is_https {
         let security_flags: u32 = SECURITY_FLAG_IGNORE_UNKNOWN_CA
             | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID
             | SECURITY_FLAG_IGNORE_CERT_CN_INVALID
@@ -1573,6 +1583,15 @@ fn callback_error_to_error(code: u32, state: &RequestState, url: &Url) -> Error 
         }
     }
 
+    // Client-certificate failures: the bare Win32 text does not say which
+    // part went wrong, and the store may have changed since the `Identity`
+    // was built.
+    if let Some(detail) = crate::error::describe_client_cert_failure(code)
+        && let Some(source) = err.inner.source.take()
+    {
+        err.inner.source = Some(Box::new(ContextError::new(detail, source)));
+    }
+
     err
 }
 
@@ -1664,9 +1683,17 @@ mod tests {
         // 5 MiB body -- exceeds the 4 MiB #[cfg(test)] threshold.
         let body = Body::from(vec![b'X'; 5 * 1024 * 1024]);
 
-        let raw = execute_request(&session, &url, "POST", &[], Some(body), &proxy_config, false)
-            .await
-            .expect("large body request should succeed");
+        let raw = execute_request(
+            &session,
+            &url,
+            "POST",
+            &[],
+            Some(body),
+            &proxy_config,
+            &crate::tls::TlsConfig::default(),
+        )
+        .await
+        .expect("large body request should succeed");
 
         assert_eq!(raw.status, 200);
     }
@@ -1778,9 +1805,17 @@ mod tests {
                 .unwrap();
             let proxy_config = ProxyConfig::none();
 
-            let raw = execute_request(&session, &url, "GET", &[], None, &proxy_config, false)
-                .await
-                .unwrap_or_else(|e| panic!("{}: request failed: {e}", case.label));
+            let raw = execute_request(
+                &session,
+                &url,
+                "GET",
+                &[],
+                None,
+                &proxy_config,
+                &crate::tls::TlsConfig::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}: request failed: {e}", case.label));
 
             assert_eq!(raw.status, case.expected_status, "{}", case.label);
         }
@@ -1830,9 +1865,17 @@ mod tests {
             .unwrap()
             .apply_to(&mut proxy_config);
 
-        let raw = execute_request(&session, &url, "GET", &[], None, &proxy_config, false)
-            .await
-            .expect("direct bypass request should succeed");
+        let raw = execute_request(
+            &session,
+            &url,
+            "GET",
+            &[],
+            None,
+            &proxy_config,
+            &crate::tls::TlsConfig::default(),
+        )
+        .await
+        .expect("direct bypass request should succeed");
 
         assert_eq!(raw.status, 200);
     }
