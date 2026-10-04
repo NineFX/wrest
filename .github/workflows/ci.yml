@@ -74,6 +74,8 @@ jobs:
           - { name: 'win / msrv / defaults',       os: windows-latest, rust: msrv,   mode: defaults }
           - { name: 'win / stable / no-defaults',  os: windows-latest, rust: stable, mode: no-defaults }
           - { name: 'win / stable / all-native',   os: windows-latest, rust: stable, mode: all, doc-tests: true }
+          - { name: 'win-arm / stable / all-native', os: windows-11-arm, rust: stable, mode: all, target: aarch64-pc-windows-msvc }
+          - { name: 'win-i686 / stable / all-native', os: windows-latest, rust: stable, mode: all, target: i686-pc-windows-msvc }
           # -- Windows - reqwest passthrough (via always-reqwest) -----
           - { name: 'win / stable / reqwest',      os: windows-latest, rust: stable, mode: all-reqwest }
           # -- Linux - reqwest passthrough (implicit, no always-reqwest needed)
@@ -106,6 +108,14 @@ jobs:
           all-reqwest)  echo "flags=--features __all-native-features,always-reqwest" ;;
         esac >> "$GITHUB_OUTPUT"
 
+        # Cross/explicit target, empty for host builds.
+        target="${{ matrix.target }}"
+        if [[ -n "$target" ]]; then
+          echo "target-flag=--target $target" >> "$GITHUB_OUTPUT"
+        else
+          echo "target-flag=" >> "$GITHUB_OUTPUT"
+        fi
+
         if [[ "${{ matrix.rust }}" == "stable" ]]; then
           echo "should-run-full-checks=true" >> "$GITHUB_OUTPUT"
         else
@@ -116,6 +126,7 @@ jobs:
       uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
       with:
         toolchain: ${{ steps.resolve.outputs.toolchain }}
+        target: ${{ matrix.target }}
         components: ${{ steps.resolve.outputs.should-run-full-checks == 'true' && 'clippy' || '' }}
 
     - name: Start go-httpbin
@@ -128,11 +139,11 @@ jobs:
 
     - name: Run clippy
       if: steps.resolve.outputs.should-run-full-checks == 'true'
-      run: cargo clippy --all-targets ${{ steps.resolve.outputs.flags }} -- -D warnings
+      run: cargo clippy --all-targets ${{ steps.resolve.outputs.flags }} ${{ steps.resolve.outputs.target-flag }} -- -D warnings
 
     - name: Run tests
       if: steps.resolve.outputs.should-run-full-checks == 'true'
-      run: cargo test --all-targets ${{ steps.resolve.outputs.flags }} --verbose
+      run: cargo test --all-targets ${{ steps.resolve.outputs.flags }} ${{ steps.resolve.outputs.target-flag }} --verbose
 
     - name: Diagnose failure
       if: failure() && steps.resolve.outputs.should-run-full-checks == 'true'
@@ -150,7 +161,7 @@ jobs:
       # toolchain.  We use `cargo check` (not `cargo test`) so MSRV is
       # bound by the public API, not by dev-dependencies.
       if: steps.resolve.outputs.should-run-full-checks != 'true'
-      run: cargo check ${{ steps.resolve.outputs.flags }} --verbose
+      run: cargo check ${{ steps.resolve.outputs.flags }} ${{ steps.resolve.outputs.target-flag }} --verbose
 
     - name: Run doc tests
       if: matrix.doc-tests
