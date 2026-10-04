@@ -1004,6 +1004,13 @@ pub(crate) async fn execute_request(
         }
     }
 
+    // Answer a client-certificate request instead of failing.  Without
+    // this WinHTTP returns ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED and never
+    // sends the request.
+    if url.is_https {
+        abi::winhttp_set_no_client_cert(request_handle.raw()).url_context(url)?;
+    }
+
     // Disable certificate validation if requested
     if accept_invalid_certs && url.is_https {
         let security_flags: u32 = SECURITY_FLAG_IGNORE_UNKNOWN_CA

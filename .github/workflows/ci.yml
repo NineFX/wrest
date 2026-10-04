@@ -84,6 +84,12 @@ jobs:
       if: steps.resolve.outputs.should-run-full-checks == 'true'
       uses: ./.github/actions/start-httpbin
 
+    - name: Start mTLS test server
+      # Windows only: the client-certificate paths it exercises exist in the
+      # WinHTTP backend, not the reqwest passthrough.
+      if: steps.resolve.outputs.should-run-full-checks == 'true' && runner.os == 'Windows'
+      uses: ./.github/actions/start-mtls
+
     - name: Run clippy
       if: steps.resolve.outputs.should-run-full-checks == 'true'
       run: cargo clippy --all-targets ${{ steps.resolve.outputs.flags }} -- -D warnings
@@ -98,6 +104,9 @@ jobs:
       run: |
         echo "::group::go-httpbin log"
         cat httpbin.log || echo "(no httpbin.log found)"
+        echo "::endgroup::"
+        echo "::group::mtls-server log"
+        cat mtls-server.log || echo "(no mtls-server.log found)"
         echo "::endgroup::"
 
     - name: Check library (MSRV)
